@@ -1,16 +1,26 @@
 # Multi-stage build for Lab Backup System
 
 # Stage 1: Base image with Python and system dependencies
-FROM python:3.11-slim as base
+# Using Ubuntu 24.04 for newer libvirt packages
+FROM ubuntu:24.04 as base
 
-# Install system dependencies
+# Install Python 3.12 and system dependencies
 RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-dev \
+    python3-pip \
     gcc \
+    g++ \
+    make \
     libpq-dev \
     libvirt-dev \
+    libvirt0 \
     pkg-config \
     libguestfs-tools \
     qemu-utils \
+    libyajl-dev \
+    libxml2-dev \
+    libxslt1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -19,7 +29,7 @@ WORKDIR /app
 COPY backend/requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Stage 2: Application
 FROM base as app
@@ -42,7 +52,7 @@ RUN chmod +x /app/entrypoint.sh
 ENV PYTHONPATH=/app
 
 # Create non-root user (but we need root for migrations)
-RUN useradd -m -u 1000 labbackup && \
+RUN useradd -m labbackup && \
     chown -R labbackup:labbackup /app /backups /var/log/lab-backup
 
 # Expose port

@@ -13,6 +13,44 @@ fi
 echo "🗄️  Running database migrations..."
 alembic upgrade head
 
+# Create default admin user if no admin exists
+echo "👤 Checking for admin user..."
+python3 -c "
+import asyncio
+from backend.models.base import AsyncSessionLocal
+from backend.models.user import User, UserRole
+from backend.core.security import get_password_hash
+from sqlalchemy import select
+
+async def create_default_admin():
+    async with AsyncSessionLocal() as db:
+        # Check if any admin user exists
+        stmt = select(User).where(User.role == UserRole.ADMIN).limit(1)
+        result = await db.execute(stmt)
+        admin_exists = result.scalar_one_or_none() is not None
+
+        if not admin_exists:
+            print('⚠️  No admin user found. Creating default admin user...')
+            admin = User(
+                username='admin',
+                email='admin@localhost',
+                password_hash=get_password_hash('admin'),
+                role=UserRole.ADMIN,
+                is_active=True
+            )
+            db.add(admin)
+            await db.commit()
+            print('✅ Default admin user created!')
+            print('   Username: admin')
+            print('   Password: admin')
+            print('   ⚠️  WARNING: Please change this password immediately!')
+            print('   You can do this via the web UI at http://localhost:8000')
+        else:
+            print('✅ Admin user already exists')
+
+asyncio.run(create_default_admin())
+"
+
 # Start the application
 echo "✨ Starting application..."
 exec "$@"

@@ -31,37 +31,51 @@ That's it! No environment file editing required. The system will:
 - ✅ Run migrations automatically
 - ✅ Start all services
 
-### Step 2: Open Your Browser
+### Step 2: Login with Default Credentials
+
+**Default Admin Account (Auto-Created):**
+- **Username:** `admin`
+- **Password:** `admin`
+- **⚠️ IMPORTANT:** Change this password immediately after first login!
 
 Visit: **http://localhost:8000**
 
-You'll be automatically redirected to the setup wizard!
+You'll see the API documentation. Login via:
+```powershell
+$response = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/auth/login" `
+  -Method Post -ContentType "application/x-www-form-urlencoded" `
+  -Body "username=admin&password=admin"
 
-### Step 3: Complete the Setup Wizard
+$token = $response.access_token
+```
 
-The setup wizard will guide you through:
+### Step 3: (Optional) Complete the Setup Wizard
 
-#### **Tab 1: Admin Account** (Required)
-- Create your administrator username
-- Set email address
-- Choose a strong password
+If you want to configure email and retention via UI, visit: **http://localhost:8000/setup**
 
-#### **Tab 2: Email Notifications** (Optional - can skip)
+The setup wizard has 3 tabs:
+
+#### **Tab 1: Admin Account** (Optional - Default already created)
+- If you prefer, create a custom admin account
+- The default admin/admin account works fine for testing
+
+#### **Tab 2: Email Notifications** (Optional)
 - Enable/disable email notifications
 - Configure SMTP settings if you want email alerts
 - Common providers (Gmail, Outlook, SendGrid) supported
-- **You can skip this and configure later!**
+- **Can configure later via API!**
 
-#### **Tab 3: Retention Policy** (Has defaults)
-- Set how long to keep backups (defaults provided)
+#### **Tab 3: Retention Policy** (Optional - Has defaults)
+- Set how long to keep backups
 - Daily: 7 days (default)
 - Weekly: 4 weeks (default)
 - Monthly: 12 months (default)
 - Yearly: 5 years (default)
+- **Can configure later via API!**
 
 ### That's It! 🎉
 
-After completing the wizard, you'll be redirected to the API documentation page where you can start configuring your backups.
+You can start using the system immediately with the default admin account.
 
 ## What Happens Automatically
 
@@ -77,7 +91,12 @@ When you run `docker-compose up -d`:
    - Schema created automatically
    - Ready to use
 
-3. ✅ **All Services Started**
+3. ✅ **Default Admin User Created**
+   - Username: admin
+   - Password: admin
+   - ⚠️ Change this immediately for security!
+
+4. ✅ **All Services Started**
    - API server
    - Celery worker for background jobs
    - Celery beat for scheduled tasks

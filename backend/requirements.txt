@@ -16,14 +16,14 @@ redis==5.0.1
 flower==2.0.1
 
 # Virtualization APIs
-libvirt-python==10.0.0
+libvirt-python==9.0.0
 podman==4.9.0
 
 # Storage Backends
 boto3==1.34.34
 botocore==1.34.34
 smbprotocol==1.12.0
-python-libnfs==1.1
+# NFS support via filesystem operations after mount (no special library needed)
 
 # Authentication & Security
 python-jose[cryptography]==3.3.0
