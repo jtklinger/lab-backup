@@ -90,6 +90,7 @@ def upgrade() -> None:
         sa.Column('capacity', sa.Integer(), nullable=True),
         sa.Column('used', sa.Integer(), nullable=True),
         sa.Column('threshold', sa.Integer(), nullable=False, server_default='80'),
+        sa.Column('last_check', sa.String(length=50), nullable=True),
         sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_storage_backends_name'), 'storage_backends', ['name'], unique=True)

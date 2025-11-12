@@ -50,6 +50,7 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
       - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
       - DEBUG=${DEBUG:-true}
+      - RUN_MIGRATIONS=true
     volumes:
       - ./backend:/app/backend
       - backup_data:/backups

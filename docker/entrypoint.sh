@@ -9,12 +9,13 @@ if [ ! -f /app/.env ]; then
     python3 /app/generate-env.py
 fi
 
-# Run database migrations
-echo "🗄️  Running database migrations..."
-alembic upgrade head
+# Run database migrations (only from API container)
+if [ "${RUN_MIGRATIONS:-false}" = "true" ]; then
+    echo "🗄️  Running database migrations..."
+    alembic upgrade head
 
-# Create default admin user if no admin exists
-echo "👤 Checking for admin user..."
+    # Create default admin user if no admin exists
+    echo "👤 Checking for admin user..."
 python3 -c "
 import asyncio
 from backend.models.base import AsyncSessionLocal
@@ -51,9 +52,10 @@ async def create_default_admin():
 asyncio.run(create_default_admin())
 "
 
-# Initialize logging
-echo "📊 Initializing logging..."
-python3 -c "from backend.core.logging_handler import setup_logging; setup_logging()"
+    # Initialize logging
+    echo "📊 Initializing logging..."
+    python3 -c "from backend.core.logging_handler import setup_logging; setup_logging()"
+fi
 
 # Start the application
 echo "✨ Starting application..."
