@@ -1,10 +1,14 @@
 # Multi-stage build for Lab Backup System
 
 # Stage 1: Base image with Python and system dependencies
-FROM python:3.11-slim as base
+# Using Ubuntu 24.04 for newer libvirt packages
+FROM ubuntu:24.04 as base
 
-# Install system dependencies
+# Install Python 3.11 and system dependencies
 RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
     gcc \
     g++ \
     make \
@@ -19,13 +23,18 @@ RUN apt-get update && apt-get install -y \
     libxslt1-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Set python3.11 as default python and upgrade pip
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && python3 -m pip install --upgrade pip
+
 WORKDIR /app
 
 # Copy requirements
 COPY backend/requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Application
 FROM base as app
