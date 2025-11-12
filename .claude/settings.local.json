@@ -15,7 +15,19 @@
       "Bash(docker run:*)",
       "Bash(git push:*)",
       "mcp__MCP_DOCKER__mcp-exec",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "WebFetch(domain:code.claude.com)",
+      "Bash(docker-compose restart:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker-compose stop:*)",
+      "Bash(docker-compose start:*)",
+      "Bash(docker inspect:*)",
+      "Bash(powershell.exe -Command \"Test-NetConnection -ComputerName localhost -Port 8000 -InformationLevel Detailed\")",
+      "Bash(powershell.exe -Command \"Invoke-WebRequest -Uri http://localhost:8000/health\")",
+      "Bash(wget:*)",
+      "mcp__MCP_DOCKER__browser_navigate",
+      "Bash(docker port:*)",
+      "Bash(python3:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

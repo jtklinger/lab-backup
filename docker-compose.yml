@@ -42,7 +42,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     container_name: lab-backup-api
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --log-level debug
     environment:
       - DATABASE_URL=postgresql+asyncpg://${DB_USER:-labbackup}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-lab_backup}
       - REDIS_URL=redis://redis:6379/0

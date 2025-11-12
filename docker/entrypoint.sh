@@ -51,6 +51,10 @@ async def create_default_admin():
 asyncio.run(create_default_admin())
 "
 
+# Initialize logging
+echo "📊 Initializing logging..."
+python3 -c "from backend.core.logging_handler import setup_logging; setup_logging()"
+
 # Start the application
 echo "✨ Starting application..."
 exec "$@"
