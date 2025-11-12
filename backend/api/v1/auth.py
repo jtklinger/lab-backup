@@ -51,12 +51,11 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
-@router.post("/login", response_model=Token)
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db)
+async def _authenticate_user(
+    form_data: OAuth2PasswordRequestForm,
+    db: AsyncSession
 ):
-    """Authenticate user and return JWT tokens."""
+    """Helper function to authenticate user."""
     # Get user by username
     stmt = select(User).where(User.username == form_data.username)
     result = await db.execute(stmt)
@@ -88,6 +87,24 @@ async def login(
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
+
+
+@router.post("/token", response_model=Token)
+async def token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db)
+):
+    """OAuth2 compatible token endpoint."""
+    return await _authenticate_user(form_data, db)
+
+
+@router.post("/login", response_model=Token)
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db)
+):
+    """Authenticate user and return JWT tokens."""
+    return await _authenticate_user(form_data, db)
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
