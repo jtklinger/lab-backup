@@ -56,7 +56,7 @@ app.include_router(jobs.router, prefix=f"{settings.API_V1_PREFIX}/jobs", tags=["
 
 @app.get("/")
 async def root():
-    """Root endpoint - redirects to setup or docs."""
+    """Root endpoint - redirects to setup or app."""
     from backend.models.base import AsyncSessionLocal
     from backend.models.user import User, UserRole
     from sqlalchemy import select
@@ -70,7 +70,7 @@ async def root():
     if not admin_exists:
         return RedirectResponse(url="/setup")
     else:
-        return RedirectResponse(url="/docs")
+        return RedirectResponse(url="/static/app.html")
 
 
 @app.get("/setup", response_class=HTMLResponse)

@@ -1,0 +1,316 @@
+/**
+ * API Client for Lab Backup System
+ */
+
+const API_BASE = '/api/v1';
+
+class APIClient {
+    constructor() {
+        this.token = localStorage.getItem('auth_token');
+    }
+
+    setToken(token) {
+        this.token = token;
+        if (token) {
+            localStorage.setItem('auth_token', token);
+        } else {
+            localStorage.removeItem('auth_token');
+        }
+    }
+
+    getToken() {
+        return this.token;
+    }
+
+    async request(endpoint, options = {}) {
+        const headers = {
+            'Content-Type': 'application/json',
+            ...options.headers,
+        };
+
+        if (this.token) {
+            headers['Authorization'] = `Bearer ${this.token}`;
+        }
+
+        const config = {
+            ...options,
+            headers,
+        };
+
+        if (options.body && typeof options.body === 'object') {
+            config.body = JSON.stringify(options.body);
+        }
+
+        try {
+            const response = await fetch(`${API_BASE}${endpoint}`, config);
+
+            if (response.status === 401) {
+                // Unauthorized - redirect to login
+                this.setToken(null);
+                window.location.href = '/static/login.html';
+                throw new Error('Unauthorized');
+            }
+
+            const data = await response.json().catch(() => null);
+
+            if (!response.ok) {
+                throw new Error(data?.detail || `HTTP ${response.status}`);
+            }
+
+            return data;
+        } catch (error) {
+            console.error('API Error:', error);
+            throw error;
+        }
+    }
+
+    // Auth endpoints
+    async login(username, password) {
+        const formData = new URLSearchParams();
+        formData.append('username', username);
+        formData.append('password', password);
+
+        const response = await fetch(`${API_BASE}/auth/token`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: formData,
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Login failed');
+        }
+
+        const data = await response.json();
+        this.setToken(data.access_token);
+        return data;
+    }
+
+    async getCurrentUser() {
+        return this.request('/auth/me');
+    }
+
+    logout() {
+        this.setToken(null);
+        window.location.href = '/static/login.html';
+    }
+
+    // Dashboard endpoints
+    async getDashboardStats() {
+        return this.request('/settings/dashboard/stats');
+    }
+
+    // Backup endpoints
+    async listBackups(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        return this.request(`/backups${query ? '?' + query : ''}`);
+    }
+
+    async getBackup(id) {
+        return this.request(`/backups/${id}`);
+    }
+
+    async deleteBackup(id) {
+        return this.request(`/backups/${id}`, { method: 'DELETE' });
+    }
+
+    async restoreBackup(id, options = {}) {
+        return this.request(`/backups/${id}/restore`, {
+            method: 'POST',
+            body: options,
+        });
+    }
+
+    // Schedule endpoints
+    async listSchedules(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        return this.request(`/schedules${query ? '?' + query : ''}`);
+    }
+
+    async getSchedule(id) {
+        return this.request(`/schedules/${id}`);
+    }
+
+    async createSchedule(data) {
+        return this.request('/schedules', {
+            method: 'POST',
+            body: data,
+        });
+    }
+
+    async updateSchedule(id, data) {
+        return this.request(`/schedules/${id}`, {
+            method: 'PUT',
+            body: data,
+        });
+    }
+
+    async deleteSchedule(id) {
+        return this.request(`/schedules/${id}`, { method: 'DELETE' });
+    }
+
+    async triggerSchedule(id) {
+        return this.request(`/schedules/${id}/trigger`, { method: 'POST' });
+    }
+
+    // Job endpoints
+    async listJobs(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        return this.request(`/jobs${query ? '?' + query : ''}`);
+    }
+
+    async getJob(id) {
+        return this.request(`/jobs/${id}`);
+    }
+
+    async getJobLogs(id) {
+        return this.request(`/jobs/${id}/logs`);
+    }
+
+    async cancelJob(id) {
+        return this.request(`/jobs/${id}/cancel`, { method: 'POST' });
+    }
+
+    // Storage endpoints
+    async listStorageBackends() {
+        return this.request('/storage');
+    }
+
+    async getStorageBackend(id) {
+        return this.request(`/storage/${id}`);
+    }
+
+    async createStorageBackend(data) {
+        return this.request('/storage', {
+            method: 'POST',
+            body: data,
+        });
+    }
+
+    async updateStorageBackend(id, data) {
+        return this.request(`/storage/${id}`, {
+            method: 'PUT',
+            body: data,
+        });
+    }
+
+    async deleteStorageBackend(id) {
+        return this.request(`/storage/${id}`, { method: 'DELETE' });
+    }
+
+    async testStorageBackend(id) {
+        return this.request(`/storage/${id}/test`, { method: 'POST' });
+    }
+
+    // KVM endpoints
+    async listKVMHosts() {
+        return this.request('/kvm/hosts');
+    }
+
+    async getKVMHost(id) {
+        return this.request(`/kvm/hosts/${id}`);
+    }
+
+    async createKVMHost(data) {
+        return this.request('/kvm/hosts', {
+            method: 'POST',
+            body: data,
+        });
+    }
+
+    async updateKVMHost(id, data) {
+        return this.request(`/kvm/hosts/${id}`, {
+            method: 'PUT',
+            body: data,
+        });
+    }
+
+    async deleteKVMHost(id) {
+        return this.request(`/kvm/hosts/${id}`, { method: 'DELETE' });
+    }
+
+    async refreshKVMHost(id) {
+        return this.request(`/kvm/hosts/${id}/refresh`, { method: 'POST' });
+    }
+
+    async listVMs(hostId = null) {
+        const query = hostId ? `?host_id=${hostId}` : '';
+        return this.request(`/kvm/vms${query}`);
+    }
+
+    async getVM(id) {
+        return this.request(`/kvm/vms/${id}`);
+    }
+
+    // Podman endpoints
+    async listPodmanHosts() {
+        return this.request('/podman/hosts');
+    }
+
+    async getPodmanHost(id) {
+        return this.request(`/podman/hosts/${id}`);
+    }
+
+    async createPodmanHost(data) {
+        return this.request('/podman/hosts', {
+            method: 'POST',
+            body: data,
+        });
+    }
+
+    async updatePodmanHost(id, data) {
+        return this.request(`/podman/hosts/${id}`, {
+            method: 'PUT',
+            body: data,
+        });
+    }
+
+    async deletePodmanHost(id) {
+        return this.request(`/podman/hosts/${id}`, { method: 'DELETE' });
+    }
+
+    async refreshPodmanHost(id) {
+        return this.request(`/podman/hosts/${id}/refresh`, { method: 'POST' });
+    }
+
+    async listContainers(hostId = null) {
+        const query = hostId ? `?host_id=${hostId}` : '';
+        return this.request(`/podman/containers${query}`);
+    }
+
+    async getContainer(id) {
+        return this.request(`/podman/containers/${id}`);
+    }
+
+    // Settings endpoints
+    async getSettingCategories() {
+        return this.request('/settings/categories');
+    }
+
+    async getSettingsByCategory(category) {
+        return this.request(`/settings/category/${category}`);
+    }
+
+    async getSetting(key) {
+        return this.request(`/settings/${key}`);
+    }
+
+    async updateSetting(key, value) {
+        return this.request(`/settings/${key}`, {
+            method: 'PUT',
+            body: { value },
+        });
+    }
+
+    async bulkUpdateSettings(settings) {
+        return this.request('/settings/bulk', {
+            method: 'PUT',
+            body: { settings },
+        });
+    }
+}
+
+// Create global API instance
+const api = new APIClient();

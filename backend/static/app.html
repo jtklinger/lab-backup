@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lab Backup System</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>Lab Backup</h1>
+                <p>System Management</p>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <div class="nav-section-title">Main</div>
+                    <a href="#dashboard" class="nav-item active" data-view="dashboard">
+                        <span class="nav-item-icon">📊</span>
+                        Dashboard
+                    </a>
+                    <a href="#backups" class="nav-item" data-view="backups">
+                        <span class="nav-item-icon">💾</span>
+                        Backups
+                    </a>
+                    <a href="#schedules" class="nav-item" data-view="schedules">
+                        <span class="nav-item-icon">📅</span>
+                        Schedules
+                    </a>
+                    <a href="#jobs" class="nav-item" data-view="jobs">
+                        <span class="nav-item-icon">⚙️</span>
+                        Jobs
+                    </a>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-title">Infrastructure</div>
+                    <a href="#kvm" class="nav-item" data-view="kvm">
+                        <span class="nav-item-icon">🖥️</span>
+                        KVM Hosts
+                    </a>
+                    <a href="#podman" class="nav-item" data-view="podman">
+                        <span class="nav-item-icon">📦</span>
+                        Podman Hosts
+                    </a>
+                    <a href="#storage" class="nav-item" data-view="storage">
+                        <span class="nav-item-icon">💿</span>
+                        Storage Backends
+                    </a>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-title">System</div>
+                    <a href="#settings" class="nav-item" data-view="settings">
+                        <span class="nav-item-icon">⚙️</span>
+                        Settings
+                    </a>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <div class="user-avatar" id="userAvatar">A</div>
+                    <div class="user-details">
+                        <div class="user-name" id="userName">Loading...</div>
+                        <div class="user-role" id="userRole">-</div>
+                    </div>
+                </div>
+                <button class="btn btn-secondary" style="width: 100%; margin-top: 0.5rem;" onclick="handleLogout()">
+                    Logout
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="header">
+                <div class="header-title">
+                    <h2 id="pageTitle">Dashboard</h2>
+                </div>
+                <div class="header-actions" id="headerActions">
+                    <!-- Dynamic action buttons will be added here -->
+                </div>
+            </header>
+
+            <div class="content" id="mainContent">
+                <!-- Dynamic content will be loaded here -->
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/utils.js"></script>
+    <script src="/static/js/views/dashboard.js"></script>
+    <script src="/static/js/views/backups.js"></script>
+    <script src="/static/js/views/schedules.js"></script>
+    <script src="/static/js/views/jobs.js"></script>
+    <script src="/static/js/views/kvm.js"></script>
+    <script src="/static/js/views/podman.js"></script>
+    <script src="/static/js/views/storage.js"></script>
+    <script src="/static/js/views/settings.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
