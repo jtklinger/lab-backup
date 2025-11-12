@@ -18,8 +18,9 @@ async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     # Setup in-memory logging handler for web UI access
-    setup_logging()
-    print("📊 In-memory logging handler configured")
+    # Temporarily disabled for debugging
+    # setup_logging()
+    # print("📊 In-memory logging handler configured")
     yield
     # Shutdown
     print("Shutting down...")
