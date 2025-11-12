@@ -173,7 +173,7 @@ function showAddStorageDialog() {
                 <select class="form-select" name="type" id="storageType" required onchange="updateStorageConfig()">
                     <option value="local">Local Filesystem</option>
                     <option value="s3">S3 Compatible</option>
-                    <option value="smb">SMB/CIFS (Coming Soon)</option>
+                    <option value="smb">SMB/CIFS Network Share</option>
                     <option value="nfs">NFS (Coming Soon)</option>
                 </select>
             </div>
@@ -217,6 +217,14 @@ function showAddStorageDialog() {
                 config.endpoint = formData.config_endpoint || null;
                 config.access_key = formData.config_access_key;
                 config.secret_key = formData.config_secret_key;
+            } else if (type === 'smb') {
+                config.server = formData.config_server;
+                config.share = formData.config_share;
+                config.username = formData.config_username;
+                config.password = formData.config_password;
+                config.domain = formData.config_domain || 'WORKGROUP';
+                config.path = formData.config_path || '/';
+                config.port = formData.config_port || 445;
             }
 
             const data = {
@@ -284,13 +292,58 @@ function updateStorageConfig() {
                 <input type="password" class="form-input" name="config_secret_key" required>
             </div>
         `;
-    } else if (type === 'smb' || type === 'nfs') {
+    } else if (type === 'smb') {
+        configHTML = `
+            <div class="alert alert-info">
+                <div class="alert-icon">ℹ</div>
+                <div class="alert-content">
+                    <div class="alert-title">SMB/CIFS Network Share</div>
+                    Configure access to a Windows or Samba network share for local backup storage.
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="form-label required">Server</label>
+                <input type="text" class="form-input" name="config_server" placeholder="192.168.1.100 or fileserver.local" required>
+                <div class="form-help">Hostname or IP address of the SMB server</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label required">Share Name</label>
+                <input type="text" class="form-input" name="config_share" placeholder="backups" required>
+                <div class="form-help">Name of the shared folder (without \\\\ prefix)</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label required">Username</label>
+                <input type="text" class="form-input" name="config_username" required>
+                <div class="form-help">SMB username for authentication</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label required">Password</label>
+                <input type="password" class="form-input" name="config_password" required>
+                <div class="form-help">SMB password for authentication</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Domain/Workgroup</label>
+                <input type="text" class="form-input" name="config_domain" placeholder="WORKGROUP">
+                <div class="form-help">Windows domain or workgroup (optional, defaults to WORKGROUP)</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Base Path</label>
+                <input type="text" class="form-input" name="config_path" placeholder="/">
+                <div class="form-help">Subdirectory within the share (optional, defaults to /)</div>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Port</label>
+                <input type="number" class="form-input" name="config_port" value="445" min="1" max="65535">
+                <div class="form-help">SMB port (default: 445)</div>
+            </div>
+        `;
+    } else if (type === 'nfs') {
         configHTML = `
             <div class="alert alert-warning">
                 <div class="alert-icon">⚠</div>
                 <div class="alert-content">
                     <div class="alert-title">Coming Soon</div>
-                    ${type.toUpperCase()} storage backend is not yet implemented.
+                    NFS storage backend is not yet implemented.
                 </div>
             </div>
         `;
