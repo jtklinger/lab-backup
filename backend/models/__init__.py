@@ -22,6 +22,7 @@ from backend.models.notification import (
     NotificationType,
     NotificationEvent
 )
+from backend.models.settings import SystemSetting
 
 __all__ = [
     # Base
@@ -55,4 +56,6 @@ __all__ = [
     "Notification",
     "NotificationType",
     "NotificationEvent",
+    # Settings
+    "SystemSetting",
 ]

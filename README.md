@@ -2,6 +2,10 @@
 
 Enterprise-grade web-based backup solution for KVM virtual machines and Podman containers with support for multiple storage backends, incremental backups, and automated retention management using the grandfather-father-son rotation strategy.
 
+> **🎉 NEW: Zero-Configuration Setup!**
+> No more manual `.env` file editing! Just run `docker-compose up -d` and configure everything through the web interface.
+> **Windows users:** See [SETUP-WINDOWS.md](SETUP-WINDOWS.md) for 3-step quick start guide.
+
 ## Features
 
 ### Core Functionality
@@ -45,6 +49,30 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system architecture, compone
 
 ### Installation
 
+#### Option 1: Zero-Configuration Setup (Recommended)
+
+1. **Clone and start**
+   ```bash
+   git clone <repository-url>
+   cd lab-backup
+   docker-compose up -d
+   ```
+
+2. **Open browser and complete setup wizard**
+   - Visit http://localhost:8000
+   - Follow the 3-step setup wizard
+   - Configure admin account, email (optional), and retention policies
+   - **Done!** Everything else is configured via web UI
+
+3. **Access the application**
+   - API: http://localhost:8000
+   - API Docs: http://localhost:8000/docs
+   - Celery Flower: http://localhost:5555
+
+See [SETUP-WINDOWS.md](SETUP-WINDOWS.md) for detailed Windows 11 guide.
+
+#### Option 2: Manual Configuration (Advanced)
+
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
@@ -69,12 +97,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system architecture, compone
    docker-compose up -d
    ```
 
-5. **Run database migrations**
+5. **Run database migrations** (auto-runs with zero-config setup)
    ```bash
    docker-compose exec api alembic upgrade head
    ```
 
-6. **Create initial admin user**
+6. **Create initial admin user** (or use setup wizard)
    ```bash
    docker-compose exec api python -c "
    from backend.models.base import SyncSessionLocal

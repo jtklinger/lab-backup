@@ -1,12 +1,15 @@
 """
 Main FastAPI application.
 """
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse, RedirectResponse
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from backend.core.config import settings
-from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs
+from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, settings as settings_api
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
@@ -35,7 +38,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
 # Include routers
+app.include_router(settings_api.router, prefix=f"{settings.API_V1_PREFIX}/settings", tags=["Settings"])
 app.include_router(auth.router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["Authentication"])
 app.include_router(kvm.router, prefix=f"{settings.API_V1_PREFIX}/kvm", tags=["KVM"])
 app.include_router(podman.router, prefix=f"{settings.API_V1_PREFIX}/podman", tags=["Podman"])
@@ -47,12 +56,30 @@ app.include_router(jobs.router, prefix=f"{settings.API_V1_PREFIX}/jobs", tags=["
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
-    return {
-        "name": settings.APP_NAME,
-        "version": settings.APP_VERSION,
-        "status": "running"
-    }
+    """Root endpoint - redirects to setup or docs."""
+    from backend.models.base import AsyncSessionLocal
+    from backend.models.user import User, UserRole
+    from sqlalchemy import select
+
+    # Check if admin user exists
+    async with AsyncSessionLocal() as db:
+        stmt = select(User).where(User.role == UserRole.ADMIN).limit(1)
+        result = await db.execute(stmt)
+        admin_exists = result.scalar_one_or_none() is not None
+
+    if not admin_exists:
+        return RedirectResponse(url="/setup")
+    else:
+        return RedirectResponse(url="/docs")
+
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page():
+    """Serve setup wizard page."""
+    setup_file = Path(__file__).parent / "static" / "setup.html"
+    if setup_file.exists():
+        return HTMLResponse(content=setup_file.read_text())
+    return HTMLResponse(content="<h1>Setup page not found</h1>", status_code=404)
 
 
 @app.get("/health")
