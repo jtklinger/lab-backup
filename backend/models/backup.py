@@ -69,12 +69,14 @@ class BackupSchedule(Base):
     vm: Mapped[Optional["VM"]] = relationship(
         back_populates="backup_schedules",
         foreign_keys=[source_id],
-        primaryjoin="and_(BackupSchedule.source_id==VM.id, BackupSchedule.source_type=='vm')"
+        primaryjoin="and_(BackupSchedule.source_id==VM.id, BackupSchedule.source_type=='vm')",
+        viewonly=True
     )
     container: Mapped[Optional["Container"]] = relationship(
         back_populates="backup_schedules",
         foreign_keys=[source_id],
-        primaryjoin="and_(BackupSchedule.source_id==Container.id, BackupSchedule.source_type=='container')"
+        primaryjoin="and_(BackupSchedule.source_id==Container.id, BackupSchedule.source_type=='container')",
+        viewonly=True
     )
     backups: Mapped[list["Backup"]] = relationship(
         back_populates="schedule",
