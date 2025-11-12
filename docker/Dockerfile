@@ -23,9 +23,6 @@ RUN apt-get update && apt-get install -y \
     libxslt1-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip
-RUN python3 -m pip install --upgrade pip --break-system-packages
-
 WORKDIR /app
 
 # Copy requirements
