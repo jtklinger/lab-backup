@@ -4,10 +4,10 @@
 # Using Ubuntu 24.04 for newer libvirt packages
 FROM ubuntu:24.04 as base
 
-# Install Python 3.11 and system dependencies
+# Install Python 3.12 and system dependencies
 RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3.11-dev \
+    python3 \
+    python3-dev \
     python3-pip \
     gcc \
     g++ \
@@ -23,10 +23,8 @@ RUN apt-get update && apt-get install -y \
     libxslt1-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Set python3.11 as default python and upgrade pip
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
-    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
-    && python3 -m pip install --upgrade pip
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip --break-system-packages
 
 WORKDIR /app
 
@@ -34,7 +32,7 @@ WORKDIR /app
 COPY backend/requirements.txt .
 
 # Install Python dependencies
-RUN python3 -m pip install --no-cache-dir -r requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
 
 # Stage 2: Application
 FROM base as app
