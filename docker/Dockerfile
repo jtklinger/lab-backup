@@ -41,12 +41,13 @@ COPY database /app/database
 COPY generate-env.py /app/
 COPY .env.minimal /app/
 COPY docker/entrypoint.sh /app/entrypoint.sh
+COPY docker/start-api.sh /app/start-api.sh
 
 # Create necessary directories
-RUN mkdir -p /backups /var/log/lab-backup
+RUN mkdir -p /backups /var/log/lab-backup /app/certs
 
-# Make entrypoint executable
-RUN chmod +x /app/entrypoint.sh
+# Make scripts executable
+RUN chmod +x /app/entrypoint.sh /app/start-api.sh
 
 # Set Python path
 ENV PYTHONPATH=/app
