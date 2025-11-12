@@ -25,7 +25,7 @@ from sqlalchemy import select
 async def create_default_admin():
     async with AsyncSessionLocal() as db:
         # Check if any admin user exists
-        stmt = select(User).where(User.role == UserRole.ADMIN).limit(1)
+        stmt = select(User).where(User.role == 'admin').limit(1)
         result = await db.execute(stmt)
         admin_exists = result.scalar_one_or_none() is not None
 
@@ -35,7 +35,7 @@ async def create_default_admin():
                 username='admin',
                 email='admin@localhost',
                 password_hash=get_password_hash('admin'),
-                role=UserRole.ADMIN,
+                role='admin',
                 is_active=True
             )
             db.add(admin)
