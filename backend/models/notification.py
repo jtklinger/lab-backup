@@ -2,7 +2,7 @@
 Notification models.
 """
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 from sqlalchemy import String, Boolean, JSON, ForeignKey, DateTime, Enum as SQLEnum, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
@@ -41,7 +41,7 @@ class NotificationConfig(Base):
         nullable=False
     )
     events: Mapped[list] = mapped_column(JSON, nullable=False)  # List of NotificationEvent
-    config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    config: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
 
     # Relationships
@@ -75,4 +75,4 @@ class Notification(Base):
         nullable=False
     )
     read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)

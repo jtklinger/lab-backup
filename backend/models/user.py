@@ -2,8 +2,8 @@
 User and authentication related models.
 """
 from datetime import datetime
-from typing import Optional
-from sqlalchemy import String, DateTime, Enum as SQLEnum
+from typing import Optional, Dict, Any
+from sqlalchemy import String, DateTime, Enum as SQLEnum, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
 
@@ -71,7 +71,7 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     resource_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     resource_id: Mapped[Optional[int]] = mapped_column(nullable=True)
-    details: Mapped[Optional[dict]] = mapped_column(nullable=True)
+    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 

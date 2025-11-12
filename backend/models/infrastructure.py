@@ -1,7 +1,7 @@
 """
 Infrastructure models for KVM hosts, VMs, Podman hosts, and containers.
 """
-from typing import Optional
+from typing import Optional, Dict, Any
 from sqlalchemy import String, Integer, Boolean, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,7 +21,7 @@ class KVMHost(Base):
         default="ssh",
         nullable=False
     )  # ssh, tls, local
-    config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     last_sync: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
@@ -48,7 +48,7 @@ class VM(Base):
     memory: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in MB
     disk_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in GB
     state: Mapped[str] = mapped_column(String(50), nullable=True)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
 
     # Relationships
     kvm_host: Mapped["KVMHost"] = relationship(back_populates="vms")
@@ -66,7 +66,7 @@ class PodmanHost(Base):
 
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     uri: Mapped[str] = mapped_column(String(255), nullable=False)
-    config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     last_sync: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
@@ -91,7 +91,7 @@ class Container(Base):
     container_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     image: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     state: Mapped[str] = mapped_column(String(50), nullable=True)
-    metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
 
     # Relationships
     podman_host: Mapped["PodmanHost"] = relationship(back_populates="containers")
