@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lab Backup System - Initial Setup</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #e0e0e0;
+            margin-bottom: 30px;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px 20px;
+            text-align: center;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: #666;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+            position: relative;
+        }
+
+        .tab.active {
+            color: #667eea;
+        }
+
+        .tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: -2px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        input[type="text"],
+        input[type="email"],
+        input[type="password"],
+        input[type="number"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+
+        .checkbox-group label {
+            margin-bottom: 0;
+            cursor: pointer;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+        }
+
+        button {
+            flex: 1;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+        }
+
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+
+        .alert {
+            padding: 12px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .alert.error {
+            background: #fee;
+            color: #c33;
+            border: 1px solid #fcc;
+        }
+
+        .alert.success {
+            background: #efe;
+            color: #3c3;
+            border: 1px solid #cfc;
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .collapsible {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+
+        .step-indicator {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔧 Lab Backup System Setup</h1>
+            <p>Let's get your backup system configured in a few simple steps</p>
+        </div>
+
+        <div class="alert" id="alert"></div>
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p style="margin-top: 15px;">Initializing system...</p>
+        </div>
+
+        <form id="setupForm">
+            <div class="tabs">
+                <button type="button" class="tab active" data-tab="admin">Admin Account</button>
+                <button type="button" class="tab" data-tab="email">Email (Optional)</button>
+                <button type="button" class="tab" data-tab="retention">Retention</button>
+            </div>
+
+            <!-- Admin Tab -->
+            <div class="tab-content active" id="admin-content">
+                <div class="step-indicator">Step 1 of 3: Create Administrator Account</div>
+
+                <div class="form-group">
+                    <label for="admin_username">Administrator Username *</label>
+                    <input type="text" id="admin_username" name="admin_username" required
+                           placeholder="admin" value="admin">
+                    <div class="help-text">This will be your main administrator account</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="admin_email">Email Address *</label>
+                    <input type="email" id="admin_email" name="admin_email" required
+                           placeholder="admin@example.com">
+                </div>
+
+                <div class="form-group">
+                    <label for="admin_password">Password *</label>
+                    <input type="password" id="admin_password" name="admin_password" required
+                           minlength="8" placeholder="Minimum 8 characters">
+                    <div class="help-text">Use a strong password with letters, numbers, and symbols</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="admin_password_confirm">Confirm Password *</label>
+                    <input type="password" id="admin_password_confirm" required
+                           minlength="8" placeholder="Re-enter your password">
+                </div>
+            </div>
+
+            <!-- Email Tab -->
+            <div class="tab-content" id="email-content">
+                <div class="step-indicator">Step 2 of 3: Email Notifications (Optional)</div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" id="smtp_enabled" name="smtp_enabled">
+                    <label for="smtp_enabled">Enable email notifications</label>
+                </div>
+
+                <div id="smtp-fields" style="display: none;">
+                    <div class="form-group">
+                        <label for="smtp_host">SMTP Server</label>
+                        <input type="text" id="smtp_host" name="smtp_host"
+                               placeholder="smtp.gmail.com">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="smtp_port">SMTP Port</label>
+                        <input type="number" id="smtp_port" name="smtp_port"
+                               value="587" placeholder="587">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="smtp_user">SMTP Username</label>
+                        <input type="text" id="smtp_user" name="smtp_user"
+                               placeholder="your-email@example.com">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="smtp_password">SMTP Password</label>
+                        <input type="password" id="smtp_password" name="smtp_password"
+                               placeholder="Your SMTP password or app password">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="smtp_from_email">From Email Address</label>
+                        <input type="email" id="smtp_from_email" name="smtp_from_email"
+                               placeholder="backups@example.com">
+                    </div>
+
+                    <div class="collapsible">
+                        <strong>Common SMTP Settings:</strong><br><br>
+                        <strong>Gmail:</strong> smtp.gmail.com:587 (Use App Password)<br>
+                        <strong>Outlook:</strong> smtp.office365.com:587<br>
+                        <strong>SendGrid:</strong> smtp.sendgrid.net:587
+                    </div>
+                </div>
+
+                <div class="help-text">
+                    You can configure email notifications later in the settings if you skip this step.
+                </div>
+            </div>
+
+            <!-- Retention Tab -->
+            <div class="tab-content" id="retention-content">
+                <div class="step-indicator">Step 3 of 3: Default Retention Policy</div>
+
+                <p style="margin-bottom: 20px; color: #666; font-size: 14px;">
+                    Configure how long backups are kept using the Grandfather-Father-Son rotation strategy.
+                </p>
+
+                <div class="form-group">
+                    <label for="retention_daily">Daily Backups (Days)</label>
+                    <input type="number" id="retention_daily" name="retention_daily"
+                           value="7" min="1" max="365">
+                    <div class="help-text">Keep last N daily backups (default: 7 days)</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="retention_weekly">Weekly Backups (Weeks)</label>
+                    <input type="number" id="retention_weekly" name="retention_weekly"
+                           value="4" min="1" max="52">
+                    <div class="help-text">Keep last N weekly backups (default: 4 weeks)</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="retention_monthly">Monthly Backups (Months)</label>
+                    <input type="number" id="retention_monthly" name="retention_monthly"
+                           value="12" min="1" max="120">
+                    <div class="help-text">Keep last N monthly backups (default: 12 months)</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="retention_yearly">Yearly Backups (Years)</label>
+                    <input type="number" id="retention_yearly" name="retention_yearly"
+                           value="5" min="1" max="50">
+                    <div class="help-text">Keep last N yearly backups (default: 5 years)</div>
+                </div>
+
+                <div class="collapsible">
+                    <strong>💡 Tip:</strong> These are default values. You can customize retention
+                    policies for each backup schedule individually.
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button type="button" class="btn-secondary" id="prevBtn" style="display: none;">
+                    Previous
+                </button>
+                <button type="button" class="btn-primary" id="nextBtn">
+                    Next
+                </button>
+                <button type="submit" class="btn-primary" id="submitBtn" style="display: none;">
+                    Complete Setup
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        let currentTab = 0;
+        const tabs = ['admin', 'email', 'retention'];
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', function() {
+                const tabName = this.dataset.tab;
+                currentTab = tabs.indexOf(tabName);
+                showTab(currentTab);
+            });
+        });
+
+        // SMTP enable/disable
+        document.getElementById('smtp_enabled').addEventListener('change', function() {
+            document.getElementById('smtp-fields').style.display =
+                this.checked ? 'block' : 'none';
+        });
+
+        // Navigation buttons
+        document.getElementById('nextBtn').addEventListener('click', function() {
+            if (validateCurrentTab()) {
+                currentTab++;
+                showTab(currentTab);
+            }
+        });
+
+        document.getElementById('prevBtn').addEventListener('click', function() {
+            currentTab--;
+            showTab(currentTab);
+        });
+
+        function showTab(n) {
+            // Hide all tab contents
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+
+            // Show current tab
+            document.getElementById(tabs[n] + '-content').classList.add('active');
+            document.querySelectorAll('.tab')[n].classList.add('active');
+
+            // Update buttons
+            document.getElementById('prevBtn').style.display = n === 0 ? 'none' : 'block';
+            document.getElementById('nextBtn').style.display = n === tabs.length - 1 ? 'none' : 'block';
+            document.getElementById('submitBtn').style.display = n === tabs.length - 1 ? 'block' : 'none';
+        }
+
+        function validateCurrentTab() {
+            const currentContent = document.getElementById(tabs[currentTab] + '-content');
+            const inputs = currentContent.querySelectorAll('input[required]');
+
+            for (let input of inputs) {
+                if (!input.value) {
+                    showAlert('Please fill in all required fields', 'error');
+                    input.focus();
+                    return false;
+                }
+            }
+
+            // Validate admin tab specifically
+            if (currentTab === 0) {
+                const password = document.getElementById('admin_password').value;
+                const confirm = document.getElementById('admin_password_confirm').value;
+
+                if (password !== confirm) {
+                    showAlert('Passwords do not match', 'error');
+                    return false;
+                }
+
+                if (password.length < 8) {
+                    showAlert('Password must be at least 8 characters', 'error');
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        function showAlert(message, type) {
+            const alert = document.getElementById('alert');
+            alert.textContent = message;
+            alert.className = 'alert ' + type;
+            alert.style.display = 'block';
+
+            setTimeout(() => {
+                alert.style.display = 'none';
+            }, 5000);
+        }
+
+        // Form submission
+        document.getElementById('setupForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            if (!validateCurrentTab()) {
+                return;
+            }
+
+            const formData = {
+                admin_username: document.getElementById('admin_username').value,
+                admin_email: document.getElementById('admin_email').value,
+                admin_password: document.getElementById('admin_password').value,
+                smtp_enabled: document.getElementById('smtp_enabled').checked,
+                smtp_host: document.getElementById('smtp_host').value || null,
+                smtp_port: parseInt(document.getElementById('smtp_port').value) || null,
+                smtp_user: document.getElementById('smtp_user').value || null,
+                smtp_password: document.getElementById('smtp_password').value || null,
+                smtp_from_email: document.getElementById('smtp_from_email').value || null,
+                retention_daily: parseInt(document.getElementById('retention_daily').value),
+                retention_weekly: parseInt(document.getElementById('retention_weekly').value),
+                retention_monthly: parseInt(document.getElementById('retention_monthly').value),
+                retention_yearly: parseInt(document.getElementById('retention_yearly').value)
+            };
+
+            try {
+                document.getElementById('setupForm').style.display = 'none';
+                document.getElementById('loading').style.display = 'block';
+
+                const response = await fetch('/api/v1/settings/setup/initialize', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    showAlert('Setup completed successfully! Redirecting...', 'success');
+                    setTimeout(() => {
+                        window.location.href = '/docs';
+                    }, 2000);
+                } else {
+                    throw new Error(result.detail || 'Setup failed');
+                }
+            } catch (error) {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('setupForm').style.display = 'block';
+                showAlert('Error: ' + error.message, 'error');
+            }
+        });
+
+        // Check setup status on load
+        window.addEventListener('load', async function() {
+            try {
+                const response = await fetch('/api/v1/settings/setup/status');
+                const status = await response.json();
+
+                if (status.setup_complete) {
+                    window.location.href = '/docs';
+                }
+            } catch (error) {
+                console.error('Error checking setup status:', error);
+            }
+        });
+    </script>
+</body>
+</html>
