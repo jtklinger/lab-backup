@@ -227,6 +227,41 @@ async def _backup_vm(db, schedule, backup, job):
             compression=settings.BACKUP_COMPRESSION
         )
 
+        # Encrypt backup if enabled
+        file_to_upload = archive_file
+        encrypted = False
+        if settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Encrypting backup before upload..."
+            )
+            db.add(log)
+            await db.commit()
+
+            from backend.core.encryption import encrypt_backup
+            encrypted_file = Path(temp_dir) / f"{archive_file.name}.encrypted"
+            encryption_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: encrypt_backup(
+                    archive_file,
+                    encrypted_file,
+                    settings.ENCRYPTION_KEY,
+                    use_chunked=True  # Use chunked for large files
+                )
+            )
+
+            file_to_upload = encrypted_file
+            encrypted = True
+
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Backup encrypted. Size: {encryption_result['original_size']} -> {encryption_result['encrypted_size']} bytes"
+            )
+            db.add(log)
+            await db.commit()
+
         # Upload to storage
         from backend.models.storage import StorageBackend as StorageBackendModel
         storage_backend_model = await db.get(StorageBackendModel, schedule.storage_backend_id)
@@ -239,11 +274,15 @@ async def _backup_vm(db, schedule, backup, job):
             storage_backend_model.config
         )
 
-        storage_path = f"vms/{vm.name}/{archive_file.name}"
+        storage_path = f"vms/{vm.name}/{file_to_upload.name}"
         upload_result = await storage.upload(
-            source_path=archive_file,
+            source_path=file_to_upload,
             destination_path=storage_path,
-            metadata={"backup_id": str(backup.id), "vm_name": vm.name}
+            metadata={
+                "backup_id": str(backup.id),
+                "vm_name": vm.name,
+                "encrypted": encrypted
+            }
         )
 
         # Log
@@ -311,6 +350,41 @@ async def _backup_container(db, schedule, backup, job):
             compression=settings.BACKUP_COMPRESSION
         )
 
+        # Encrypt backup if enabled
+        file_to_upload = archive_file
+        encrypted = False
+        if settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Encrypting backup before upload..."
+            )
+            db.add(log)
+            await db.commit()
+
+            from backend.core.encryption import encrypt_backup
+            encrypted_file = Path(temp_dir) / f"{archive_file.name}.encrypted"
+            encryption_result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: encrypt_backup(
+                    archive_file,
+                    encrypted_file,
+                    settings.ENCRYPTION_KEY,
+                    use_chunked=True  # Use chunked for large files
+                )
+            )
+
+            file_to_upload = encrypted_file
+            encrypted = True
+
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Backup encrypted. Size: {encryption_result['original_size']} -> {encryption_result['encrypted_size']} bytes"
+            )
+            db.add(log)
+            await db.commit()
+
         # Upload to storage
         from backend.models.storage import StorageBackend as StorageBackendModel
         storage_backend_model = await db.get(StorageBackendModel, schedule.storage_backend_id)
@@ -323,11 +397,15 @@ async def _backup_container(db, schedule, backup, job):
             storage_backend_model.config
         )
 
-        storage_path = f"containers/{container.name}/{archive_file.name}"
+        storage_path = f"containers/{container.name}/{file_to_upload.name}"
         upload_result = await storage.upload(
-            source_path=archive_file,
+            source_path=file_to_upload,
             destination_path=storage_path,
-            metadata={"backup_id": str(backup.id), "container_name": container.name}
+            metadata={
+                "backup_id": str(backup.id),
+                "container_name": container.name,
+                "encrypted": encrypted
+            }
         )
 
         # Log
