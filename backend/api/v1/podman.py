@@ -47,6 +47,22 @@ async def list_hosts(
     return result.scalars().all()
 
 
+@router.get("/containers", response_model=List[ContainerResponse])
+async def list_all_containers(
+    host_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List all containers across all Podman hosts, optionally filtered by host_id."""
+    if host_id:
+        stmt = select(Container).where(Container.podman_host_id == host_id)
+    else:
+        stmt = select(Container)
+
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
 @router.get("/hosts/{host_id}/containers", response_model=List[ContainerResponse])
 async def list_containers(
     host_id: int,

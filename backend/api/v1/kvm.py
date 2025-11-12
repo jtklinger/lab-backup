@@ -95,6 +95,23 @@ async def create_host(
     return host
 
 
+@router.get("/vms", response_model=List[VMResponse])
+async def list_all_vms(
+    host_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List all VMs across all KVM hosts, optionally filtered by host_id."""
+    if host_id:
+        stmt = select(VM).where(VM.kvm_host_id == host_id)
+    else:
+        stmt = select(VM)
+
+    result = await db.execute(stmt)
+    vms = result.scalars().all()
+    return vms
+
+
 @router.get("/hosts/{host_id}/vms", response_model=List[VMResponse])
 async def list_vms(
     host_id: int,
@@ -148,6 +165,65 @@ async def list_vms(
     vms = result.scalars().all()
 
     return vms
+
+
+@router.post("/hosts/{host_id}/refresh")
+async def refresh_host(
+    host_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Refresh VMs from KVM host by syncing with libvirt."""
+    # Get host
+    host = await db.get(KVMHost, host_id)
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="KVM host not found"
+        )
+
+    # Sync VMs from libvirt
+    kvm_service = KVMBackupService()
+    try:
+        vms_data = await kvm_service.list_vms(host.uri)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to connect to KVM host: {str(e)}"
+        )
+
+    # Update database
+    synced_count = 0
+    for vm_data in vms_data:
+        stmt = select(VM).where(VM.uuid == vm_data["uuid"])
+        result = await db.execute(stmt)
+        vm = result.scalar_one_or_none()
+
+        if vm:
+            # Update existing
+            vm.name = vm_data["name"]
+            vm.state = vm_data["state"]
+            vm.vcpus = vm_data["vcpus"]
+            vm.memory = vm_data["memory"]
+        else:
+            # Create new
+            vm = VM(
+                kvm_host_id=host.id,
+                name=vm_data["name"],
+                uuid=vm_data["uuid"],
+                vcpus=vm_data["vcpus"],
+                memory=vm_data["memory"],
+                state=vm_data["state"]
+            )
+            db.add(vm)
+        synced_count += 1
+
+    await db.commit()
+
+    return {
+        "message": f"Successfully synced {synced_count} VMs from {host.name}",
+        "count": synced_count
+    }
 
 
 @router.get("/vms/{vm_id}", response_model=VMResponse)

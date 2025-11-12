@@ -27,7 +27,21 @@
       "Bash(wget:*)",
       "mcp__MCP_DOCKER__browser_navigate",
       "Bash(docker port:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(/tmp/token.txt)",
+      "Bash(powershell.exe -Command \"Test-NetConnection -ComputerName localhost -Port 8443 -InformationLevel Detailed\")",
+      "Bash(timeout 5 bash:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker ps:*)",
+      "Bash(echo:*)",
+      "Bash(powershell.exe -Command \"try { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}; $response = Invoke-WebRequest -Uri https://localhost:8443/health -UseBasicParsing; Write-Host $response.Content } catch { Write-Host $_Exception.Message }\")",
+      "Bash(python -c:*)",
+      "Bash(git reset:*)",
+      "Bash(database/migrations/versions/20251112_2132_727bcfa25c1f_update_kvm_hosts_schema.py)",
+      "Bash(docker cp:*)",
+      "Bash(~/.ssh/known_hosts)",
+      "mcp__ssh-mcp-kvm01__exec",
+      "Bash(timeout 30 bash:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
