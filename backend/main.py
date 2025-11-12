@@ -17,7 +17,9 @@ from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs,
 async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
-    # Note: setup_logging() is called in entrypoint.sh before uvicorn starts
+    # Setup in-memory logging handler for web UI access
+    setup_logging()
+    print("📊 In-memory logging handler configured")
     yield
     # Shutdown
     print("Shutting down...")
