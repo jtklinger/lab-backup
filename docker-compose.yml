@@ -42,7 +42,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     container_name: lab-backup-api
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --log-level info
+    command: /app/start-api.sh
     environment:
       - DATABASE_URL=postgresql+asyncpg://${DB_USER:-labbackup}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-lab_backup}
       - REDIS_URL=redis://redis:6379/0
@@ -52,12 +52,12 @@ services:
       - DEBUG=${DEBUG:-true}
       - RUN_MIGRATIONS=true
       # SSL/TLS Configuration
-      - ENABLE_SSL=false
+      - ENABLE_SSL=${ENABLE_SSL:-true}
       - SSL_HOSTNAME=${SSL_HOSTNAME:-localhost}
       - SSL_CERT_DIR=/app/certs
       - SSL_PORT=8443
       - HTTP_PORT=8000
-      - LOG_LEVEL=debug
+      - LOG_LEVEL=info
     volumes:
       - ./backend:/app/backend
       - backup_data:/backups

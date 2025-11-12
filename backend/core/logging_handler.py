@@ -156,18 +156,14 @@ def setup_logging():
     """Setup application logging with in-memory handler."""
     log_handler = get_log_handler()
 
-    # Add to root logger
+    # Add handler to root logger, but don't change its level
+    # This way we capture all logs without interfering with uvicorn's config
     root_logger = logging.getLogger()
-
-    # Check if handler is already added
     if log_handler not in root_logger.handlers:
         root_logger.addHandler(log_handler)
 
-    # Set level to INFO by default (DEBUG is too verbose)
-    root_logger.setLevel(logging.INFO)
-
-    # Also capture logs from specific loggers we care about
-    for logger_name in ['backend', 'uvicorn', 'sqlalchemy']:
+    # Also explicitly add to specific loggers we care about
+    for logger_name in ['backend', 'uvicorn', 'sqlalchemy', 'fastapi']:
         logger = logging.getLogger(logger_name)
         if log_handler not in logger.handlers:
             logger.addHandler(log_handler)

@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
+import asyncio
 
 from backend.core.config import settings
 from backend.core.logging_handler import setup_logging
@@ -17,10 +18,16 @@ from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs,
 async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
-    # Setup in-memory logging handler for web UI access
-    # Temporarily disabled for debugging
-    # setup_logging()
-    # print("📊 In-memory logging handler configured")
+    # TODO: In-memory logging setup disabled - causes SSL binding issues
+    # Need to investigate why modifying Python logging interferes with uvicorn SSL
+    # async def delayed_logging_setup():
+    #     await asyncio.sleep(2)
+    #     try:
+    #         setup_logging()
+    #         print("📊 In-memory logging handler configured")
+    #     except Exception as e:
+    #         print(f"⚠️  Failed to setup logging: {e}")
+    # asyncio.create_task(delayed_logging_setup())
     yield
     # Shutdown
     print("Shutting down...")
@@ -92,6 +99,30 @@ async def setup_page():
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/test-logging")
+async def test_logging():
+    """Test endpoint to verify logging is working."""
+    import logging
+    from backend.core.logging_handler import get_log_handler
+
+    # Generate some test log messages
+    logger = logging.getLogger("backend.test")
+    logger.info("Test INFO message")
+    logger.warning("Test WARNING message")
+    logger.error("Test ERROR message")
+
+    # Get log stats
+    handler = get_log_handler()
+    stats = handler.get_stats()
+    recent_logs = handler.get_logs(limit=10)
+
+    return {
+        "stats": stats,
+        "recent_logs": recent_logs,
+        "handler_in_root": handler in logging.getLogger().handlers
+    }
 
 
 if __name__ == "__main__":
