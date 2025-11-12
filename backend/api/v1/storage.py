@@ -83,6 +83,72 @@ async def create_storage_backend(
     return backend
 
 
+@router.get("/{backend_id}")
+async def get_storage_backend(
+    backend_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get a specific storage backend."""
+    stmt = select(StorageBackend).where(StorageBackend.id == backend_id)
+    result = await db.execute(stmt)
+    backend = result.scalar_one_or_none()
+
+    if not backend:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Storage backend not found"
+        )
+
+    return {
+        "id": backend.id,
+        "name": backend.name,
+        "type": backend.type,
+        "enabled": backend.enabled,
+        "capacity": backend.capacity,
+        "used": backend.used,
+        "threshold": backend.threshold
+    }
+
+
+@router.post("/{backend_id}/test")
+async def test_storage_backend(
+    backend_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """Test connection to a storage backend."""
+    stmt = select(StorageBackend).where(StorageBackend.id == backend_id)
+    result = await db.execute(stmt)
+    backend = result.scalar_one_or_none()
+
+    if not backend:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Storage backend not found"
+        )
+
+    try:
+        storage = create_storage(backend.type, backend.config)
+        success = await storage.test_connection()
+
+        if success:
+            return {
+                "success": True,
+                "message": "Successfully connected to storage backend"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Failed to connect to storage backend"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Connection test failed: {str(e)}"
+        }
+
+
 @router.get("/{backend_id}/usage")
 async def get_storage_usage(
     backend_id: int,

@@ -2,7 +2,11 @@
 User and authentication related models.
 """
 from datetime import datetime
+<<<<<<< Updated upstream
 from typing import Optional, Dict, Any
+=======
+from typing import Optional
+>>>>>>> Stashed changes
 from sqlalchemy import String, DateTime, Enum as SQLEnum, JSON, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
@@ -52,7 +56,11 @@ class APIToken(Base):
 
     __tablename__ = "api_tokens"
 
+<<<<<<< Updated upstream
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+=======
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+>>>>>>> Stashed changes
     token_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -71,7 +79,11 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     resource_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     resource_id: Mapped[Optional[int]] = mapped_column(nullable=True)
+<<<<<<< Updated upstream
     details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+=======
+    details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+>>>>>>> Stashed changes
     ip_address: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 

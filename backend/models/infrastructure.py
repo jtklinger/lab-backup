@@ -48,7 +48,11 @@ class VM(Base):
     memory: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in MB
     disk_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in GB
     state: Mapped[str] = mapped_column(String(50), nullable=True)
+<<<<<<< Updated upstream
     meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column("metadata", JSON, nullable=True)
+=======
+    vm_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
+>>>>>>> Stashed changes
 
     # Relationships
     kvm_host: Mapped["KVMHost"] = relationship(back_populates="vms")
@@ -92,7 +96,11 @@ class Container(Base):
     container_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     image: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     state: Mapped[str] = mapped_column(String(50), nullable=True)
+<<<<<<< Updated upstream
     meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column("metadata", JSON, nullable=True)
+=======
+    container_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
+>>>>>>> Stashed changes
 
     # Relationships
     podman_host: Mapped["PodmanHost"] = relationship(back_populates="containers")
