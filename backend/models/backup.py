@@ -62,7 +62,7 @@ class BackupSchedule(Base):
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     last_run: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column("metadata", JSON, nullable=True)
 
     # Relationships
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backup_schedules")
@@ -128,7 +128,7 @@ class Backup(Base):
         index=True
     )
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column("metadata", JSON, nullable=True)
 
     # Relationships
     schedule: Mapped["BackupSchedule"] = relationship(back_populates="backups")
@@ -180,7 +180,7 @@ class Job(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column("metadata", JSON, nullable=True)
     celery_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
 
     # Relationships
