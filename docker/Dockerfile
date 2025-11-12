@@ -52,7 +52,7 @@ RUN chmod +x /app/entrypoint.sh
 ENV PYTHONPATH=/app
 
 # Create non-root user (but we need root for migrations)
-RUN useradd -m -u 1000 labbackup && \
+RUN useradd -m labbackup && \
     chown -R labbackup:labbackup /app /backups /var/log/lab-backup
 
 # Expose port
