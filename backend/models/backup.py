@@ -42,13 +42,13 @@ class BackupSchedule(Base):
 
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     source_type: Mapped[SourceType] = mapped_column(
-        SQLEnum(SourceType),
+        SQLEnum(SourceType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         index=True
     )
     source_id: Mapped[int] = mapped_column(nullable=False, index=True)
     schedule_type: Mapped[ScheduleType] = mapped_column(
-        SQLEnum(ScheduleType),
+        SQLEnum(ScheduleType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         index=True
     )
@@ -95,20 +95,20 @@ class Backup(Base):
         index=True
     )
     source_type: Mapped[SourceType] = mapped_column(
-        SQLEnum(SourceType),
+        SQLEnum(SourceType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         index=True
     )
     source_id: Mapped[int] = mapped_column(nullable=False, index=True)
     source_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     backup_type: Mapped[ScheduleType] = mapped_column(
-        SQLEnum(ScheduleType),
+        SQLEnum(ScheduleType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         index=True
     )
     tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     status: Mapped[BackupStatus] = mapped_column(
-        SQLEnum(BackupStatus),
+        SQLEnum(BackupStatus, values_callable=lambda x: [e.value for e in x]),
         default=BackupStatus.PENDING,
         nullable=False,
         index=True
@@ -164,12 +164,12 @@ class Job(Base):
     __tablename__ = "jobs"
 
     type: Mapped[JobType] = mapped_column(
-        SQLEnum(JobType),
+        SQLEnum(JobType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         index=True
     )
     status: Mapped[JobStatus] = mapped_column(
-        SQLEnum(JobStatus),
+        SQLEnum(JobStatus, values_callable=lambda x: [e.value for e in x]),
         default=JobStatus.PENDING,
         nullable=False,
         index=True

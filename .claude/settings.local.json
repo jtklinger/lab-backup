@@ -12,7 +12,10 @@
       "Bash(docker-compose up:*)",
       "Bash(docker-compose ps:*)",
       "Bash(python -m alembic:*)",
-      "Bash(docker run:*)"
+      "Bash(docker run:*)",
+      "Bash(git push:*)",
+      "mcp__MCP_DOCKER__mcp-exec",
+      "Bash(curl:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

@@ -24,7 +24,7 @@ class StorageBackend(Base):
 
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     type: Mapped[StorageType] = mapped_column(
-        SQLEnum(StorageType),
+        SQLEnum(StorageType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         index=True
     )

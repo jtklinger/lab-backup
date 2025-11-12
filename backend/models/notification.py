@@ -37,7 +37,7 @@ class NotificationConfig(Base):
         index=True
     )
     type: Mapped[NotificationType] = mapped_column(
-        SQLEnum(NotificationType),
+        SQLEnum(NotificationType, values_callable=lambda x: [e.value for e in x]),
         nullable=False
     )
     events: Mapped[list] = mapped_column(JSON, nullable=False)  # List of NotificationEvent
@@ -59,11 +59,11 @@ class Notification(Base):
         index=True
     )
     type: Mapped[NotificationType] = mapped_column(
-        SQLEnum(NotificationType),
+        SQLEnum(NotificationType, values_callable=lambda x: [e.value for e in x]),
         nullable=False
     )
     event: Mapped[NotificationEvent] = mapped_column(
-        SQLEnum(NotificationEvent),
+        SQLEnum(NotificationEvent, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         index=True
     )
