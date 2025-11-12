@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     BACKUP_BASE_PATH: str = "/backups"
     BACKUP_COMPRESSION: str = "zstd"  # gzip, zstd, none
     BACKUP_ENCRYPTION_ENABLED: bool = False
+    ENCRYPTION_KEY: Optional[str] = None  # Fernet encryption key for backups
     MAX_BACKUP_SIZE_GB: int = 1000
 
     # Email/SMTP

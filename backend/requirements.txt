@@ -23,7 +23,7 @@ podman==4.9.0
 boto3==1.34.34
 botocore==1.34.34
 smbprotocol==1.12.0
-python-libnfs==1.1
+# NFS support via filesystem operations after mount (no special library needed)
 
 # Authentication & Security
 python-jose[cryptography]==3.3.0
