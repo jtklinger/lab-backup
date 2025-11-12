@@ -156,14 +156,19 @@ def setup_logging():
     """Setup application logging with in-memory handler."""
     log_handler = get_log_handler()
 
-    # Add handler to root logger, but don't change its level
-    # This way we capture all logs without interfering with uvicorn's config
-    root_logger = logging.getLogger()
-    if log_handler not in root_logger.handlers:
-        root_logger.addHandler(log_handler)
+    # IMPORTANT: Do NOT modify root logger or uvicorn logger
+    # Modifying these interferes with uvicorn's SSL socket binding
+    # Only add handler to application-specific loggers
 
-    # Also explicitly add to specific loggers we care about
-    for logger_name in ['backend', 'uvicorn', 'sqlalchemy', 'fastapi']:
+    # Add to backend logger (our application code)
+    loggers_configured = []
+    for logger_name in ['backend', 'sqlalchemy', 'fastapi']:
         logger = logging.getLogger(logger_name)
         if log_handler not in logger.handlers:
             logger.addHandler(log_handler)
+            # Set level to INFO for our loggers
+            if logger.level == logging.NOTSET:
+                logger.setLevel(logging.INFO)
+            loggers_configured.append(logger_name)
+
+    print(f"✅ Logging handler attached to: {', '.join(loggers_configured) if loggers_configured else 'none (already configured)'}", flush=True)

@@ -18,16 +18,17 @@ from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs,
 async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
-    # TODO: In-memory logging setup disabled - causes SSL binding issues
-    # Need to investigate why modifying Python logging interferes with uvicorn SSL
-    # async def delayed_logging_setup():
-    #     await asyncio.sleep(2)
-    #     try:
-    #         setup_logging()
-    #         print("📊 In-memory logging handler configured")
-    #     except Exception as e:
-    #         print(f"⚠️  Failed to setup logging: {e}")
-    # asyncio.create_task(delayed_logging_setup())
+
+    # TODO: In-memory logging disabled - ANY logging handler setup breaks SSL
+    # Even when done in lifespan (after socket bind), attaching handlers to
+    # backend/sqlalchemy/fastapi loggers causes SSL connections to hang
+    # This requires deeper investigation into Python logging + uvicorn SSL interaction
+    # try:
+    #     setup_logging()
+    #     print("📊 In-memory logging handler configured")
+    # except Exception as e:
+    #     print(f"⚠️  Failed to setup logging: {e}")
+
     yield
     # Shutdown
     print("Shutting down...")
