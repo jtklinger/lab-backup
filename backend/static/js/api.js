@@ -310,6 +310,20 @@ class APIClient {
             body: { settings },
         });
     }
+
+    // Logs endpoints
+    async getLogs(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        return this.request(`/logs${query ? '?' + query : ''}`);
+    }
+
+    async getLogStats() {
+        return this.request('/logs/stats');
+    }
+
+    async clearLogs() {
+        return this.request('/logs/clear', { method: 'POST' });
+    }
 }
 
 // Create global API instance

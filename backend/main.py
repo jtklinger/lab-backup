@@ -9,12 +9,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from backend.core.config import settings
-from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, settings as settings_api
+from backend.core.logging_handler import setup_logging
+from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    setup_logging()  # Initialize in-memory log handler
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     yield
     # Shutdown
@@ -52,6 +54,7 @@ app.include_router(storage.router, prefix=f"{settings.API_V1_PREFIX}/storage", t
 app.include_router(schedules.router, prefix=f"{settings.API_V1_PREFIX}/schedules", tags=["Schedules"])
 app.include_router(backups.router, prefix=f"{settings.API_V1_PREFIX}/backups", tags=["Backups"])
 app.include_router(jobs.router, prefix=f"{settings.API_V1_PREFIX}/jobs", tags=["Jobs"])
+app.include_router(logs.router, prefix=f"{settings.API_V1_PREFIX}/logs", tags=["Logs"])
 
 
 @app.get("/")

@@ -17,6 +17,7 @@ const views = {
     kvm: renderKVM,
     podman: renderPodman,
     storage: renderStorage,
+    logs: renderLogs,
     settings: renderSettings,
 };
 
@@ -100,6 +101,7 @@ function loadView(viewName, updateHash = true) {
         kvm: 'KVM Infrastructure',
         podman: 'Podman Infrastructure',
         storage: 'Storage Backends',
+        logs: 'Application Logs',
         settings: 'System Settings',
     };
     document.getElementById('pageTitle').textContent = titles[viewName] || viewName;
