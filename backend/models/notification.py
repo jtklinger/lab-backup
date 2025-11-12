@@ -75,8 +75,4 @@ class Notification(Base):
         nullable=False
     )
     read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-<<<<<<< Updated upstream
-    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column("metadata", JSON, nullable=True)
-=======
     notification_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
->>>>>>> Stashed changes

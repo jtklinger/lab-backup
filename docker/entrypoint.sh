@@ -11,7 +11,7 @@ fi
 
 # Run database migrations
 echo "🗄️  Running database migrations..."
-# alembic upgrade head  # Temporarily disabled to fix migration issues
+alembic upgrade head
 
 # Create default admin user if no admin exists
 echo "👤 Checking for admin user..."
