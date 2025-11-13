@@ -278,6 +278,10 @@ async def initialize_setup(
 
         # System Settings
         ("system.setup_complete", True, "boolean", "system", "Initial setup completed"),
+
+        # Session Settings
+        ("session.timeout_minutes", 30, "integer", "security", "Session timeout in minutes (1-60)"),
+        ("session.warning_minutes", 5, "integer", "security", "Show warning N minutes before expiration (1-30)"),
     ]
 
     for key, value, value_type, category, description, *is_secret in default_settings:

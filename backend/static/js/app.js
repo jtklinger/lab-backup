@@ -31,6 +31,10 @@ async function initApp() {
         // Setup navigation
         setupNavigation();
 
+        // Initialize session manager with default 5 minute warning
+        sessionManager = new SessionManager(api, 5);
+        sessionManager.start();
+
         // Load initial view
         const hash = window.location.hash.slice(1) || 'dashboard';
         loadView(hash);

@@ -7,19 +7,33 @@ const API_BASE = '/api/v1';
 class APIClient {
     constructor() {
         this.token = localStorage.getItem('auth_token');
+        this.refreshToken = localStorage.getItem('refresh_token');
     }
 
-    setToken(token) {
+    setToken(token, refreshToken = null) {
         this.token = token;
         if (token) {
             localStorage.setItem('auth_token', token);
         } else {
             localStorage.removeItem('auth_token');
         }
+
+        if (refreshToken !== null) {
+            this.refreshToken = refreshToken;
+            if (refreshToken) {
+                localStorage.setItem('refresh_token', refreshToken);
+            } else {
+                localStorage.removeItem('refresh_token');
+            }
+        }
     }
 
     getToken() {
         return this.token;
+    }
+
+    getRefreshToken() {
+        return this.refreshToken;
     }
 
     async request(endpoint, options = {}) {
@@ -84,7 +98,32 @@ class APIClient {
         }
 
         const data = await response.json();
-        this.setToken(data.access_token);
+        this.setToken(data.access_token, data.refresh_token);
+        return data;
+    }
+
+    async refreshAccessToken() {
+        if (!this.refreshToken) {
+            throw new Error('No refresh token available');
+        }
+
+        const response = await fetch(`${API_BASE}/auth/refresh`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                refresh_token: this.refreshToken
+            }),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Token refresh failed');
+        }
+
+        const data = await response.json();
+        this.setToken(data.access_token, data.refresh_token);
         return data;
     }
 
@@ -93,7 +132,7 @@ class APIClient {
     }
 
     logout() {
-        this.setToken(null);
+        this.setToken(null, null);
         window.location.href = '/static/login.html';
     }
 

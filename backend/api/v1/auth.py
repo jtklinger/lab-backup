@@ -15,7 +15,8 @@ from backend.core.security import (
     get_password_hash,
     create_access_token,
     create_refresh_token,
-    get_current_user
+    get_current_user,
+    decode_token
 )
 from backend.core.config import settings
 
@@ -157,3 +158,75 @@ async def get_me(current_user: User = Depends(get_current_user)):
 async def logout(current_user: User = Depends(get_current_user)):
     """Logout user (client should discard tokens)."""
     return {"message": "Successfully logged out"}
+
+
+class RefreshTokenRequest(BaseModel):
+    """Refresh token request model."""
+    refresh_token: str
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh_access_token(
+    request: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Refresh access token using a valid refresh token.
+    Returns new access and refresh tokens.
+    """
+    try:
+        # Decode and validate refresh token
+        payload = decode_token(request.refresh_token)
+
+        # Verify it's a refresh token
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token payload",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Get user from database
+        stmt = select(User).where(User.username == username)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Inactive user",
+            )
+
+        # Create new tokens
+        access_token = create_access_token(data={"sub": user.username})
+        refresh_token = create_refresh_token(data={"sub": user.username})
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

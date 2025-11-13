@@ -99,10 +99,18 @@ function renderSettingField(setting) {
             </label>
         `;
     } else if (setting.value_type === 'integer') {
+        // Add validation constraints for specific settings
+        let constraints = '';
+        if (setting.key === 'session.timeout_minutes') {
+            constraints = 'min="1" max="60"';
+        } else if (setting.key === 'session.warning_minutes') {
+            constraints = 'min="1" max="30"';
+        }
+
         inputField = `
             <label class="form-label">${setting.description || setting.key}</label>
             <input type="number" class="form-input" id="${inputId}" name="${setting.key}"
-                   value="${value}" ${isSecret ? 'readonly' : ''}>
+                   value="${value}" ${isSecret ? 'readonly' : ''} ${constraints}>
         `;
     } else {
         // string type
