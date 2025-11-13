@@ -241,8 +241,13 @@ async function viewBackupDetails(backupId) {
             </div>
         `);
 
-        modal.overlay.querySelector('.modal-footer').style.display = 'none';
         modal.show();
+
+        // Hide footer after modal is shown
+        const footer = modal.overlay?.querySelector('.modal-footer');
+        if (footer) {
+            footer.style.display = 'none';
+        }
 
     } catch (error) {
         notify.error('Failed to load backup details: ' + error.message);

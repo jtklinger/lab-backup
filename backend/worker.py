@@ -1,9 +1,11 @@
 """
 Celery worker configuration and tasks.
 """
+import asyncio
 import tempfile
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import select
@@ -64,37 +66,68 @@ celery_app.conf.beat_schedule = {
 
 
 @celery_app.task(name="backend.worker.execute_backup")
-def execute_backup(schedule_id: int, backup_id: int):
+def execute_backup(schedule_id: Optional[int], backup_id: int):
     """
     Execute a backup job.
 
     Args:
-        schedule_id: ID of the backup schedule
+        schedule_id: ID of the backup schedule (None for one-time backups)
         backup_id: ID of the backup record
     """
-    import asyncio
-    return asyncio.run(_execute_backup_async(schedule_id, backup_id))
+    # Create a new event loop for this task
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        return loop.run_until_complete(_execute_backup_async(schedule_id, backup_id))
+    finally:
+        loop.close()
 
 
-async def _execute_backup_async(schedule_id: int, backup_id: int):
+async def _execute_backup_async(schedule_id: Optional[int], backup_id: int):
     """Async implementation of backup execution."""
-    async with AsyncSessionLocal() as db:
-        try:
-            # Get schedule and backup
-            schedule = await db.get(BackupSchedule, schedule_id)
-            backup = await db.get(Backup, backup_id)
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-            if not schedule or not backup:
-                raise Exception("Schedule or backup not found")
+    # Create a new async engine for this event loop
+    engine = create_async_engine(
+        str(settings.DATABASE_URL),
+        echo=settings.DB_ECHO,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+    )
+    SessionLocal = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+
+    async with SessionLocal() as db:
+        backup = None
+        job = None
+        try:
+            # Get backup
+            backup = await db.get(Backup, backup_id)
+            if not backup:
+                raise Exception("Backup not found")
+
+            # Get schedule if this is a scheduled backup
+            schedule = None
+            if schedule_id:
+                schedule = await db.get(BackupSchedule, schedule_id)
+                if not schedule:
+                    raise Exception("Schedule not found")
 
             # Create job record
+            job_metadata = {"schedule_id": schedule_id} if schedule_id else {"one_time": True}
             job = Job(
                 type=JobType.BACKUP,
                 status=JobStatus.RUNNING,
                 backup_id=backup_id,
                 started_at=datetime.utcnow(),
                 celery_task_id=celery_app.current_task.request.id,
-                metadata={"schedule_id": schedule_id}
+                job_metadata=job_metadata
             )
             db.add(job)
             await db.commit()
@@ -105,21 +138,22 @@ async def _execute_backup_async(schedule_id: int, backup_id: int):
             await db.commit()
 
             # Log start
+            backup_type_str = f"{backup.backup_mode.value} backup" if hasattr(backup, 'backup_mode') else "backup"
             log = JobLog(
                 job_id=job.id,
                 level="INFO",
-                message=f"Starting backup of {backup.source_type} {backup.source_name}"
+                message=f"Starting {backup_type_str} of {backup.source_type} {backup.source_name}"
             )
             db.add(log)
             await db.commit()
 
             # Execute backup based on source type
-            if schedule.source_type == SourceType.VM:
+            if backup.source_type == SourceType.VM:
                 result = await _backup_vm(db, schedule, backup, job)
-            elif schedule.source_type == SourceType.CONTAINER:
+            elif backup.source_type == SourceType.CONTAINER:
                 result = await _backup_container(db, schedule, backup, job)
             else:
-                raise Exception(f"Unknown source type: {schedule.source_type}")
+                raise Exception(f"Unknown source type: {backup.source_type}")
 
             # Update backup with results
             backup.status = BackupStatus.COMPLETED
@@ -176,18 +210,23 @@ async def _execute_backup_async(schedule_id: int, backup_id: int):
                 "success": False,
                 "error": str(e)
             }
+        finally:
+            # Dispose engine to clean up connections
+            await engine.dispose()
 
 
 async def _backup_vm(db, schedule, backup, job):
     """Execute VM backup."""
     from backend.models.infrastructure import VM, KVMHost
 
-    # Get VM and host
-    vm = await db.get(VM, schedule.source_id)
-    kvm_host = await db.get(KVMHost, vm.kvm_host_id)
+    # Get VM and host (use backup.source_id for both scheduled and one-time backups)
+    vm = await db.get(VM, backup.source_id)
+    if not vm:
+        raise Exception(f"VM with ID {backup.source_id} not found")
 
-    if not vm or not kvm_host:
-        raise Exception("VM or KVM host not found")
+    kvm_host = await db.get(KVMHost, vm.kvm_host_id)
+    if not kvm_host:
+        raise Exception(f"KVM host not found for VM {vm.name}")
 
     # Log
     log = JobLog(
@@ -204,10 +243,16 @@ async def _backup_vm(db, schedule, backup, job):
 
         # Execute backup
         kvm_service = KVMBackupService()
+
+        # Determine if incremental backup is requested
+        from backend.models.backup import BackupMode
+        is_incremental = hasattr(backup, 'backup_mode') and backup.backup_mode == BackupMode.INCREMENTAL
+
         backup_result = await kvm_service.create_backup(
             uri=kvm_host.uri,
             vm_uuid=vm.uuid,
-            backup_dir=backup_dir
+            backup_dir=backup_dir,
+            incremental=is_incremental
         )
 
         # Log
@@ -264,7 +309,7 @@ async def _backup_vm(db, schedule, backup, job):
 
         # Upload to storage
         from backend.models.storage import StorageBackend as StorageBackendModel
-        storage_backend_model = await db.get(StorageBackendModel, schedule.storage_backend_id)
+        storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
 
         if not storage_backend_model:
             raise Exception("Storage backend not found")
@@ -305,12 +350,14 @@ async def _backup_container(db, schedule, backup, job):
     """Execute container backup."""
     from backend.models.infrastructure import Container, PodmanHost
 
-    # Get container and host
-    container = await db.get(Container, schedule.source_id)
-    podman_host = await db.get(PodmanHost, container.podman_host_id)
+    # Get container and host (use backup.source_id for both scheduled and one-time backups)
+    container = await db.get(Container, backup.source_id)
+    if not container:
+        raise Exception(f"Container with ID {backup.source_id} not found")
 
-    if not container or not podman_host:
-        raise Exception("Container or Podman host not found")
+    podman_host = await db.get(PodmanHost, container.podman_host_id)
+    if not podman_host:
+        raise Exception(f"Podman host not found for container {container.name}")
 
     # Log
     log = JobLog(
@@ -387,7 +434,7 @@ async def _backup_container(db, schedule, backup, job):
 
         # Upload to storage
         from backend.models.storage import StorageBackend as StorageBackendModel
-        storage_backend_model = await db.get(StorageBackendModel, schedule.storage_backend_id)
+        storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
 
         if not storage_backend_model:
             raise Exception("Storage backend not found")

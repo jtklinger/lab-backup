@@ -132,18 +132,40 @@ class KVMBackupService:
                 disks = []
 
                 for disk in root.findall(".//disk[@device='disk']"):
+                    disk_type = disk.get("type")
                     source = disk.find("source")
                     target = disk.find("target")
+                    driver = disk.find("driver")
 
                     if source is not None and target is not None:
-                        # Get disk source path
-                        disk_path = source.get("file") or source.get("dev")
-                        if disk_path:
-                            disks.append({
-                                "path": disk_path,
-                                "target": target.get("dev"),
-                                "bus": target.get("bus")
-                            })
+                        disk_info = {
+                            "target": target.get("dev"),
+                            "bus": target.get("bus"),
+                            "type": disk_type
+                        }
+
+                        # Handle different disk types
+                        if disk_type == "file":
+                            # Local file-based disk
+                            disk_path = source.get("file") or source.get("dev")
+                            if disk_path:
+                                disk_info["path"] = disk_path
+                                disk_info["format"] = driver.get("type") if driver is not None else "raw"
+                                disks.append(disk_info)
+                        elif disk_type == "network":
+                            # Network-based disk (RBD, iSCSI, etc.)
+                            protocol = source.get("protocol")
+                            if protocol == "rbd":
+                                # Ceph RBD disk
+                                rbd_name = source.get("name")
+                                if rbd_name:
+                                    disk_info["protocol"] = protocol
+                                    disk_info["rbd_name"] = rbd_name
+                                    disk_info["format"] = driver.get("type") if driver is not None else "raw"
+                                    # Extract pool and image name
+                                    if "/" in rbd_name:
+                                        disk_info["rbd_pool"], disk_info["rbd_image"] = rbd_name.split("/", 1)
+                                    disks.append(disk_info)
 
                 # Create backup directory
                 backup_dir.mkdir(parents=True, exist_ok=True)
@@ -195,39 +217,173 @@ class KVMBackupService:
                 total_size = 0
                 backed_up_disks = []
 
+                # Extract hostname from URI for SSH commands
+                import re
+                ssh_match = re.search(r'ssh://([^@]+@)?([^:/]+)', uri)
+                ssh_host = None
+                if ssh_match:
+                    ssh_user = ssh_match.group(1).rstrip('@') if ssh_match.group(1) else None
+                    ssh_hostname = ssh_match.group(2)
+                    ssh_host = f"{ssh_user}@{ssh_hostname}" if ssh_user else ssh_hostname
+
                 for disk in disks:
-                    disk_path = Path(disk["path"])
-                    if not disk_path.exists():
-                        logger.warning(f"Disk not found: {disk_path}")
+                    disk_type = disk.get("type")
+                    target = disk["target"]
+
+                    if disk_type == "file":
+                        # File-based disk
+                        disk_path = Path(disk["path"])
+
+                        # For file-based disks over SSH, we need to copy from remote host
+                        if ssh_host:
+                            dest_disk = backup_dir / f"{target}.img"
+                            logger.info(f"Copying file-based disk from remote host: {disk_path}")
+
+                            import subprocess
+                            try:
+                                # Use SCP to copy the disk file from remote host
+                                cmd = ["scp", f"{ssh_host}:{disk_path}", str(dest_disk)]
+                                subprocess.run(cmd, check=True, capture_output=True, text=True)
+                                disk_size = dest_disk.stat().st_size
+                            except subprocess.CalledProcessError as e:
+                                logger.error(f"SCP failed for {target}: {e.stderr}")
+                                continue
+                        else:
+                            # Local libvirt - direct file access
+                            if not disk_path.exists():
+                                logger.warning(f"Disk not found: {disk_path}")
+                                continue
+
+                            dest_disk = backup_dir / f"{target}.qcow2"
+
+                            # Determine backup method based on incremental flag
+                            if incremental and disk_path.suffix in [".qcow2", ".qed"]:
+                                logger.info(f"Creating incremental backup of disk: {target}")
+                                import subprocess
+                                try:
+                                    cmd = [
+                                        "qemu-img", "create",
+                                        "-f", "qcow2",
+                                        "-b", str(disk_path),
+                                        "-F", "qcow2",
+                                        str(dest_disk)
+                                    ]
+                                    subprocess.run(cmd, check=True, capture_output=True, text=True)
+                                except subprocess.CalledProcessError as e:
+                                    logger.error(f"qemu-img failed for {target}: {e.stderr}")
+                                    import shutil
+                                    shutil.copy2(disk_path, dest_disk)
+                            else:
+                                # Full backup - copy entire disk image
+                                logger.info(f"Creating full backup of disk: {target} ({disk_path})")
+                                import shutil
+                                shutil.copy2(disk_path, dest_disk)
+
+                            disk_size = dest_disk.stat().st_size
+
+                    elif disk_type == "network" and disk.get("protocol") == "rbd":
+                        # RBD/Ceph disk - export via SSH using qemu-img convert
+                        # qemu-img on KVM host can directly access RBD images
+                        rbd_pool = disk.get("rbd_pool", "")
+                        rbd_image = disk.get("rbd_image", "")
+                        rbd_name = disk.get("rbd_name", "")
+
+                        if not ssh_host:
+                            logger.error(f"RBD backup requires SSH connection, but URI is local: {uri}")
+                            continue
+
+                        dest_disk = backup_dir / f"{target}.img"
+                        logger.info(f"Exporting RBD disk: {rbd_name} (30 GB, this will take some time)")
+
+                        import subprocess
+                        import uuid
+                        try:
+                            # Use a two-step approach:
+                            # 1. Convert RBD to temp file on KVM host using qemu-img
+                            # 2. Stream temp file via SSH and delete it
+
+                            temp_filename = f"/tmp/backup_{uuid.uuid4().hex[:8]}.img"
+                            logger.info(f"Step 1: Converting RBD to temp file on KVM host: {temp_filename}")
+
+                            # Step 1: Convert RBD to file on KVM host
+                            convert_cmd = [
+                                "ssh", ssh_host,
+                                "qemu-img", "convert",
+                                "-O", "raw",
+                                f"rbd:{rbd_name}",
+                                temp_filename
+                            ]
+
+                            subprocess.run(
+                                convert_cmd,
+                                stderr=subprocess.PIPE,
+                                check=True,
+                                text=False,
+                                timeout=7200  # 2 hour timeout for large disks
+                            )
+
+                            logger.info(f"Step 2: Streaming temp file to worker and cleaning up")
+
+                            # Step 2: Stream file back and delete it
+                            # Use && to ensure cleanup happens even if successful
+                            stream_cmd = [
+                                "ssh", ssh_host,
+                                f"cat {temp_filename} && rm -f {temp_filename}"
+                            ]
+
+                            with open(dest_disk, 'wb') as f:
+                                subprocess.run(
+                                    stream_cmd,
+                                    stdout=f,
+                                    stderr=subprocess.PIPE,
+                                    check=True,
+                                    text=False,
+                                    timeout=3600  # 1 hour for transfer
+                                )
+
+                            disk_size = dest_disk.stat().st_size
+                            logger.info(f"Exported RBD disk {rbd_name}: {disk_size} bytes ({disk_size / 1024**3:.2f} GB)")
+
+                        except subprocess.CalledProcessError as e:
+                            error_msg = e.stderr.decode() if e.stderr else str(e)
+                            logger.error(f"RBD export failed for {target}: {error_msg}")
+                            # Try to clean up temp file
+                            try:
+                                subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                            except:
+                                pass
+                            continue
+                        except subprocess.TimeoutExpired:
+                            logger.error(f"RBD export for {target} timed out")
+                            # Try to clean up temp file
+                            try:
+                                subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                            except:
+                                pass
+                            continue
+                        except Exception as e:
+                            logger.error(f"Unexpected error exporting RBD disk {target}: {e}")
+                            # Try to clean up temp file
+                            try:
+                                subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                            except:
+                                pass
+                            continue
+                    else:
+                        logger.warning(f"Unsupported disk type: {disk_type} for disk {target}")
                         continue
 
-                    # Determine backup method based on disk format
-                    if incremental and parent_backup and disk_path.suffix == ".qcow2":
-                        # Use qemu-img to create incremental backup
-                        # This would require qemu-img command execution
-                        logger.info(f"Creating incremental backup of disk: {disk['target']}")
-                        # For now, we'll do a full copy
-                        # TODO: Implement proper incremental backup using qemu-img
-                        pass
-
-                    # Copy disk image
-                    dest_disk = backup_dir / f"{disk['target']}.qcow2"
-                    logger.info(f"Backing up disk: {disk['target']} ({disk_path})")
-
-                    # Use cp command for efficiency (could use qemu-img convert)
-                    import shutil
-                    shutil.copy2(disk_path, dest_disk)
-
-                    disk_size = dest_disk.stat().st_size
                     total_size += disk_size
 
                     backed_up_disks.append({
-                        "target": disk["target"],
+                        "target": target,
                         "file": dest_disk.name,
-                        "size": disk_size
+                        "size": disk_size,
+                        "type": disk_type,
+                        "incremental": incremental and disk_type == "file" and disk.get("path", "").endswith((".qcow2", ".qed"))
                     })
 
-                    logger.info(f"Backed up disk: {disk['target']} ({disk_size} bytes)")
+                    logger.info(f"Backed up disk: {target} ({disk_size} bytes)")
 
                 # Delete snapshot if created
                 if snapshot_created:

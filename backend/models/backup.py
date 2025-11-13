@@ -3,7 +3,7 @@ Backup schedule and backup models.
 """
 from datetime import datetime
 from typing import Optional, Dict, Any
-from sqlalchemy import String, Integer, Boolean, JSON, ForeignKey, DateTime, Enum as SQLEnum, Text
+from sqlalchemy import String, Integer, BigInteger, Boolean, JSON, ForeignKey, DateTime, Enum as SQLEnum, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
 
@@ -33,6 +33,12 @@ class BackupStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class BackupMode(str, enum.Enum):
+    """Backup mode - full or incremental."""
+    FULL = "full"
+    INCREMENTAL = "incremental"
 
 
 class BackupSchedule(Base):
@@ -89,9 +95,9 @@ class Backup(Base):
 
     __tablename__ = "backups"
 
-    schedule_id: Mapped[int] = mapped_column(
+    schedule_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("backup_schedules.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True
     )
     source_type: Mapped[SourceType] = mapped_column(
@@ -106,6 +112,17 @@ class Backup(Base):
         nullable=False,
         index=True
     )
+    backup_mode: Mapped[BackupMode] = mapped_column(
+        SQLEnum(BackupMode, values_callable=lambda x: [e.value for e in x]),
+        default=BackupMode.FULL,
+        nullable=False,
+        index=True
+    )
+    parent_backup_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("backups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
     tags: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     status: Mapped[BackupStatus] = mapped_column(
         SQLEnum(BackupStatus, values_callable=lambda x: [e.value for e in x]),
@@ -113,8 +130,8 @@ class Backup(Base):
         nullable=False,
         index=True
     )
-    size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in bytes
-    compressed_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in bytes
+    size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)  # in bytes
+    compressed_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)  # in bytes
     storage_backend_id: Mapped[int] = mapped_column(
         ForeignKey("storage_backends.id", ondelete="RESTRICT"),
         nullable=False,
@@ -133,8 +150,19 @@ class Backup(Base):
     backup_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
 
     # Relationships
-    schedule: Mapped["BackupSchedule"] = relationship(back_populates="backups")
+    schedule: Mapped[Optional["BackupSchedule"]] = relationship(back_populates="backups")
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backups")
+    parent_backup: Mapped[Optional["Backup"]] = relationship(
+        "Backup",
+        remote_side="Backup.id",
+        foreign_keys=[parent_backup_id],
+        back_populates="child_backups"
+    )
+    child_backups: Mapped[list["Backup"]] = relationship(
+        "Backup",
+        foreign_keys=[parent_backup_id],
+        back_populates="parent_backup"
+    )
     job: Mapped[Optional["Job"]] = relationship(
         back_populates="backup",
         uselist=False

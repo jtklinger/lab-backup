@@ -140,19 +140,25 @@ class PodmanBackupService:
         uri: str,
         container_id: str,
         backup_dir: Path,
-        include_volumes: bool = True
+        include_volumes: bool = True,
+        incremental: bool = False
     ) -> Dict[str, Any]:
         """
         Create a backup of a container.
+
+        Note: Podman container backups are ALWAYS full exports. The `incremental`
+        parameter is accepted for API compatibility but is ignored. Podman's
+        container export functionality does not support incremental backups.
 
         Args:
             uri: Podman connection URI
             container_id: ID or name of the container
             backup_dir: Directory to store backup files
             include_volumes: Whether to backup volumes
+            incremental: Ignored - Podman always does full exports
 
         Returns:
-            Dictionary with backup information
+            Dictionary with backup information (includes 'incremental': False)
         """
         try:
             client = await self._run_in_executor(self._get_client, uri)
@@ -257,7 +263,8 @@ class PodmanBackupService:
                     "volumes_size": volumes_size,
                     "total_size": total_size,
                     "backup_dir": str(backup_dir),
-                    "checkpoint_created": checkpoint_created
+                    "checkpoint_created": checkpoint_created,
+                    "incremental": False  # Podman always does full exports
                 }
 
             return await self._run_in_executor(_backup)

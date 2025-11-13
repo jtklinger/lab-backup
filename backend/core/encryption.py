@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import BinaryIO, Optional
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import logging
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class BackupEncryption:
             import os
             salt = os.urandom(16)
 
-        kdf = PBKDF2(
+        kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,

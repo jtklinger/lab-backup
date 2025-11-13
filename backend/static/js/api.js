@@ -116,6 +116,13 @@ class APIClient {
         return this.request(`/backups/${id}`, { method: 'DELETE' });
     }
 
+    async triggerBackup(data) {
+        return this.request('/backups/trigger', {
+            method: 'POST',
+            body: data
+        });
+    }
+
     async restoreBackup(id, options = {}) {
         return this.request(`/backups/${id}/restore`, {
             method: 'POST',

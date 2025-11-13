@@ -396,22 +396,21 @@ class SMBStorage(StorageBackend):
         """Ensure a directory exists, creating it if necessary."""
         try:
             def _mkdir():
-                if not smb_exists(path):
-                    # Create parent directories recursively
-                    parts = path.split('\\')
-                    current = ""
-                    for part in parts:
-                        if not part:
-                            continue
-                        current = current + "\\" + part if current else part
-                        if not smb_exists(current):
-                            try:
-                                mkdir(current)
-                            except Exception:
-                                pass  # Directory might already exist
+                try:
+                    # Check if directory already exists
+                    if smb_exists(path):
+                        return
+
+                    # Try to create the directory (makedirs functionality)
+                    mkdir(path)
+                except Exception as e:
+                    # Directory might already exist or we might not have permission to check
+                    # Just log and continue - the file write will fail if directory truly doesn't exist
+                    self.logger.debug(f"Directory check/creation for {path}: {e}")
+                    pass
 
             await asyncio.get_event_loop().run_in_executor(None, _mkdir)
 
         except Exception as e:
-            self.logger.error(f"Failed to create SMB directory: {e}")
-            raise StorageError(f"Failed to create directory: {e}")
+            # Don't raise - let the actual file operation fail if needed
+            self.logger.warning(f"Could not ensure SMB directory exists: {e}")

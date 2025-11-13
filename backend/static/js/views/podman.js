@@ -170,8 +170,11 @@ function renderPodmanContent(hosts, containers) {
                                         </td>
                                         <td>${hosts.find(h => h.id === container.podman_host_id)?.name || 'Unknown'}</td>
                                         <td>
+                                            <button class="btn btn-sm btn-success" onclick="showBackupNowDialog('container', ${container.id}, '${container.name}')">
+                                                ⚡ Backup Now
+                                            </button>
                                             <button class="btn btn-sm btn-primary" onclick="createContainerSchedule(${container.id})">
-                                                Schedule Backup
+                                                📅 Schedule
                                             </button>
                                         </td>
                                     </tr>

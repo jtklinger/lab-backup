@@ -122,5 +122,89 @@ function handleLogout() {
     );
 }
 
+// Show backup now dialog (shared between KVM and Podman views)
+async function showBackupNowDialog(sourceType, sourceId, sourceName) {
+    try {
+        // Load storage backends
+        const storageBackends = await api.listStorageBackends();
+
+        if (storageBackends.length === 0) {
+            notify.error('No storage backends configured. Please add a storage backend first.');
+            return;
+        }
+
+        // Load existing backups to check if incremental is possible
+        const backups = await api.listBackups({ source_type: sourceType, source_id: sourceId });
+        const hasFullBackup = backups.some(b => b.backup_mode === 'full' && b.status === 'completed');
+
+        const modal = new Modal(`Backup ${sourceName}`, `
+            <form id="backupNowForm">
+                <div class="form-group">
+                    <label class="form-label required">Backup Mode</label>
+                    <select class="form-input" name="backup_mode" id="backup_mode" required ${!hasFullBackup ? 'disabled' : ''}>
+                        <option value="full">Full Backup</option>
+                        <option value="incremental" ${!hasFullBackup ? 'disabled' : ''}>Incremental Backup${!hasFullBackup ? ' (requires a completed full backup first)' : ''}</option>
+                    </select>
+                    ${!hasFullBackup ? '<div class="form-help" style="color: #f59e0b;">ℹ️ No full backup found. Create a full backup first to enable incremental backups.</div>' : ''}
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label required">Storage Backend</label>
+                    <select class="form-input" name="storage_backend_id" required>
+                        ${storageBackends.map(backend => `
+                            <option value="${backend.id}">${backend.name} (${backend.type})</option>
+                        `).join('')}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Retention (days)</label>
+                    <input type="number" class="form-input" name="retention_days"
+                           value="30" min="1" max="3650" required>
+                    <div class="form-help">Number of days to retain this backup</div>
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" name="encryption_enabled">
+                        <span>Enable encryption</span>
+                    </label>
+                </div>
+            </form>
+        `);
+
+        modal.setOnConfirm(async () => {
+            try {
+                const form = document.getElementById('backupNowForm');
+                const data = getFormData(form);
+
+                // Add source info
+                data.source_type = sourceType;
+                data.source_id = parseInt(sourceId);
+
+                const loading = showLoading(modal.overlay);
+                const result = await api.triggerBackup(data);
+                hideLoading(loading);
+
+                notify.success(`Backup queued successfully! Backup ID: ${result.id}`);
+                modal.close();
+
+                // Optionally navigate to backups view to see the backup
+                setTimeout(() => {
+                    if (confirm('Backup has been queued. Would you like to view the backups page?')) {
+                        loadView('backups');
+                    }
+                }, 500);
+            } catch (error) {
+                notify.error('Failed to trigger backup: ' + error.message);
+            }
+        });
+
+        modal.show();
+    } catch (error) {
+        notify.error('Failed to load backup dialog: ' + error.message);
+    }
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', initApp);

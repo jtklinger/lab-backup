@@ -172,8 +172,11 @@ function renderKVMContent(hosts, vms) {
                                         <td>${formatBytes((vm.memory || 0) * 1024)}</td>
                                         <td>${hosts.find(h => h.id === vm.kvm_host_id)?.name || 'Unknown'}</td>
                                         <td>
+                                            <button class="btn btn-sm btn-success" onclick="showBackupNowDialog('vm', ${vm.id}, '${vm.name}')">
+                                                ⚡ Backup Now
+                                            </button>
                                             <button class="btn btn-sm btn-primary" onclick="createVMSchedule(${vm.id})">
-                                                Schedule Backup
+                                                📅 Schedule
                                             </button>
                                         </td>
                                     </tr>
