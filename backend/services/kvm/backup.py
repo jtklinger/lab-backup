@@ -511,6 +511,181 @@ class KVMBackupService:
             logger.error(f"Failed to get VM info: {e}")
             raise
 
+    async def restore_vm(
+        self,
+        uri: str,
+        backup_dir: Path,
+        new_name: Optional[str] = None,
+        overwrite: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Restore a VM from a backup.
+
+        Args:
+            uri: Libvirt connection URI
+            backup_dir: Directory containing the extracted backup files
+            new_name: Optional new name for the restored VM
+            overwrite: Whether to overwrite existing VM with the same name
+
+        Returns:
+            Dictionary with restore information
+        """
+        try:
+            conn = await self._run_in_executor(self._get_connection, uri)
+
+            def _restore():
+                # Read VM info
+                info_file = backup_dir / "vm_info.json"
+                if not info_file.exists():
+                    raise Exception("vm_info.json not found in backup")
+
+                with open(info_file, 'r') as f:
+                    vm_info = json.load(f)
+
+                original_name = vm_info["name"]
+                restore_name = new_name if new_name else original_name
+
+                logger.info(f"Restoring VM: {original_name} as {restore_name}")
+
+                # Check if VM already exists
+                try:
+                    existing_domain = conn.lookupByName(restore_name)
+                    if not overwrite:
+                        raise Exception(f"VM '{restore_name}' already exists. Use overwrite=True to replace it.")
+
+                    # Undefine existing VM
+                    logger.info(f"Undefining existing VM: {restore_name}")
+                    existing_domain.undefineFlags(
+                        libvirt.VIR_DOMAIN_UNDEFINE_MANAGED_SAVE |
+                        libvirt.VIR_DOMAIN_UNDEFINE_NVRAM
+                    )
+                except libvirt.libvirtError:
+                    # VM doesn't exist - that's fine
+                    pass
+
+                # Read and modify domain XML
+                xml_file = backup_dir / "domain.xml"
+                if not xml_file.exists():
+                    raise Exception("domain.xml not found in backup")
+
+                with open(xml_file, 'r') as f:
+                    xml_content = f.read()
+
+                # Parse XML
+                root = ET.fromstring(xml_content)
+
+                # Update VM name if specified
+                if new_name:
+                    name_elem = root.find("name")
+                    if name_elem is not None:
+                        name_elem.text = new_name
+
+                # Remove UUID to get a new one assigned
+                uuid_elem = root.find("uuid")
+                if uuid_elem is not None:
+                    root.remove(uuid_elem)
+
+                # Extract hostname from URI for SSH commands
+                import re
+                ssh_match = re.search(r'ssh://([^@]+@)?([^:/]+)', uri)
+                ssh_host = None
+                if ssh_match:
+                    ssh_user = ssh_match.group(1).rstrip('@') if ssh_match.group(1) else None
+                    ssh_hostname = ssh_match.group(2)
+                    ssh_host = f"{ssh_user}@{ssh_hostname}" if ssh_user else ssh_hostname
+
+                # Determine storage path based on host capabilities
+                # We'll use /var/lib/libvirt/images by default
+                storage_path = "/var/lib/libvirt/images"
+
+                # Update disk paths
+                restored_disks = []
+                for disk_elem in root.findall(".//disk[@device='disk']"):
+                    source_elem = disk_elem.find("source")
+                    target_elem = disk_elem.find("target")
+
+                    if source_elem is None or target_elem is None:
+                        continue
+
+                    target_dev = target_elem.get("dev")
+                    disk_type = disk_elem.get("type")
+
+                    # Find corresponding disk file in backup directory
+                    # Disk files are named like: vda.img, vda.qcow2, vdb.img, etc.
+                    disk_file = None
+                    for ext in ['.img', '.qcow2', '.raw']:
+                        candidate = backup_dir / f"{target_dev}{ext}"
+                        if candidate.exists():
+                            disk_file = candidate
+                            logger.info(f"Found disk file for {target_dev}: {candidate.name}")
+                            break
+
+                    if not disk_file:
+                        logger.warning(f"Disk file not found for {target_dev}, skipping")
+                        continue
+
+                    # New disk path on target host
+                    new_disk_name = f"{restore_name}-{target_dev}.img"
+                    new_disk_path = f"{storage_path}/{new_disk_name}"
+
+                    # Copy disk to target host
+                    logger.info(f"Copying disk {target_dev} to {new_disk_path}")
+
+                    if ssh_host:
+                        # Remote host - use SCP
+                        import subprocess
+                        try:
+                            cmd = ["scp", str(disk_file), f"{ssh_host}:{new_disk_path}"]
+                            subprocess.run(cmd, check=True, capture_output=True, text=True)
+                            logger.info(f"Disk copied via SCP: {new_disk_path}")
+                        except subprocess.CalledProcessError as e:
+                            logger.error(f"SCP failed for {target_dev}: {e.stderr}")
+                            raise Exception(f"Failed to copy disk {target_dev}: {e.stderr}")
+                    else:
+                        # Local host - direct copy
+                        import shutil
+                        shutil.copy2(disk_file, new_disk_path)
+                        logger.info(f"Disk copied locally: {new_disk_path}")
+
+                    # Update disk path in XML based on disk type
+                    if disk_type == "file":
+                        source_elem.set("file", new_disk_path)
+                    elif disk_type == "block":
+                        source_elem.set("dev", new_disk_path)
+
+                    restored_disks.append({
+                        "target": target_dev,
+                        "path": new_disk_path,
+                        "size": disk_file.stat().st_size
+                    })
+
+                # Convert XML back to string
+                modified_xml = ET.tostring(root, encoding='unicode')
+
+                # Define the VM
+                logger.info(f"Defining restored VM: {restore_name}")
+                domain = conn.defineXML(modified_xml)
+
+                new_uuid = domain.UUIDString()
+                logger.info(f"VM restored successfully. UUID: {new_uuid}")
+
+                return {
+                    "vm_name": restore_name,
+                    "vm_uuid": new_uuid,
+                    "original_name": original_name,
+                    "disks": restored_disks,
+                    "overwritten": overwrite
+                }
+
+            return await self._run_in_executor(_restore)
+
+        except libvirt.libvirtError as e:
+            logger.error(f"Failed to restore VM: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error during restore: {e}")
+            raise
+
     def close_connections(self):
         """Close all libvirt connections."""
         for uri, conn in self.connections.items():
