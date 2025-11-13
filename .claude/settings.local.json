@@ -41,7 +41,8 @@
       "Bash(docker cp:*)",
       "Bash(~/.ssh/known_hosts)",
       "mcp__ssh-mcp-kvm01__exec",
-      "Bash(timeout 30 bash:*)"
+      "Bash(timeout 30 bash:*)",
+      "mcp__ssh-mcp-kvm02__exec"
     ]
   },
   "enableAllProjectMcpServers": true,
