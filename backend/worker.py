@@ -551,7 +551,7 @@ async def _execute_restore_async(backup_id: int, target_host_id: Optional[int], 
 
             # Execute restore based on source type
             if backup.source_type == SourceType.VM:
-                result = await _restore_vm(db, backup, job, target_host_id, new_name, overwrite)
+                result = await _restore_vm(db, backup, job, target_host_id, new_name, overwrite, storage_type, storage_config)
             elif backup.source_type == SourceType.CONTAINER:
                 raise Exception("Container restore not yet implemented")
             else:
@@ -603,7 +603,7 @@ async def _execute_restore_async(backup_id: int, target_host_id: Optional[int], 
             await engine.dispose()
 
 
-async def _restore_vm(db, backup, job, target_host_id, new_name, overwrite):
+async def _restore_vm(db, backup, job, target_host_id, new_name, overwrite, storage_type="auto", storage_config=None):
     """Execute VM restore."""
     from backend.models.infrastructure import VM, KVMHost
     from backend.models.storage import StorageBackend as StorageBackendModel
@@ -724,7 +724,10 @@ async def _restore_vm(db, backup, job, target_host_id, new_name, overwrite):
             uri=target_host.uri,
             backup_dir=backup_dir,
             new_name=new_name,
-            overwrite=overwrite
+            overwrite=overwrite,
+            storage_type=storage_type,
+            storage_config=storage_config,
+            host_config=target_host.config or {}
         )
 
         # If this is a new VM (not overwriting), create a new VM record

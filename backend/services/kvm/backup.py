@@ -516,16 +516,22 @@ class KVMBackupService:
         uri: str,
         backup_dir: Path,
         new_name: Optional[str] = None,
-        overwrite: bool = False
+        overwrite: bool = False,
+        storage_type: str = "auto",
+        storage_config: Optional[dict] = None,
+        host_config: Optional[dict] = None
     ) -> Dict[str, Any]:
         """
-        Restore a VM from a backup.
+        Restore a VM from a backup with flexible storage destination.
 
         Args:
             uri: Libvirt connection URI
             backup_dir: Directory containing the extracted backup files
             new_name: Optional new name for the restored VM
             overwrite: Whether to overwrite existing VM with the same name
+            storage_type: Storage type: "auto" (detect from backup), "file", or "rbd"
+            storage_config: Optional storage-specific configuration override
+            host_config: KVM host configuration containing RBD settings
 
         Returns:
             Dictionary with restore information
@@ -594,9 +600,14 @@ class KVMBackupService:
                     ssh_hostname = ssh_match.group(2)
                     ssh_host = f"{ssh_user}@{ssh_hostname}" if ssh_user else ssh_hostname
 
-                # Determine storage path based on host capabilities
-                # We'll use /var/lib/libvirt/images by default
-                storage_path = "/var/lib/libvirt/images"
+                # Get storage configuration
+                host_cfg = host_config or {}
+                storage_cfg = host_cfg.get("storage", {})
+                file_storage_path = storage_cfg.get("file_storage_path", "/var/lib/libvirt/images")
+                rbd_cfg = storage_cfg.get("rbd", {})
+
+                # Get original disk information from vm_info.json to detect types
+                original_disks = {disk["target"]: disk for disk in vm_info.get("disks", [])}
 
                 # Update disk paths
                 restored_disks = []
@@ -608,10 +619,8 @@ class KVMBackupService:
                         continue
 
                     target_dev = target_elem.get("dev")
-                    disk_type = disk_elem.get("type")
 
                     # Find corresponding disk file in backup directory
-                    # Disk files are named like: vda.img, vda.qcow2, vdb.img, etc.
                     disk_file = None
                     for ext in ['.img', '.qcow2', '.raw']:
                         candidate = backup_dir / f"{target_dev}{ext}"
@@ -624,40 +633,142 @@ class KVMBackupService:
                         logger.warning(f"Disk file not found for {target_dev}, skipping")
                         continue
 
-                    # New disk path on target host
-                    new_disk_name = f"{restore_name}-{target_dev}.img"
-                    new_disk_path = f"{storage_path}/{new_disk_name}"
+                    # Determine target storage type
+                    original_disk = original_disks.get(target_dev, {})
+                    original_disk_type = original_disk.get("type", "file")
+                    original_protocol = original_disk.get("protocol")
 
-                    # Copy disk to target host
-                    logger.info(f"Copying disk {target_dev} to {new_disk_path}")
+                    # Decide target storage type
+                    if storage_type == "auto":
+                        # Auto-detect from original
+                        if original_disk_type == "network" and original_protocol == "rbd":
+                            target_storage_type = "rbd"
+                        else:
+                            target_storage_type = "file"
+                    else:
+                        target_storage_type = storage_type
 
-                    if ssh_host:
-                        # Remote host - use SCP
+                    # Restore based on target storage type
+                    if target_storage_type == "rbd":
+                        # Restore to RBD/Ceph
+                        rbd_pool = original_disk.get("rbd_pool") or rbd_cfg.get("default_pool", "vms")
+                        rbd_image = f"{restore_name}-{target_dev}"
+
+                        logger.info(f"Uploading disk {target_dev} to RBD: {rbd_pool}/{rbd_image}")
+
+                        if not ssh_host:
+                            raise Exception("RBD restore requires SSH connection to KVM host")
+
                         import subprocess
                         try:
-                            cmd = ["scp", str(disk_file), f"{ssh_host}:{new_disk_path}"]
-                            subprocess.run(cmd, check=True, capture_output=True, text=True)
-                            logger.info(f"Disk copied via SCP: {new_disk_path}")
+                            # Upload to RBD using qemu-img convert over SSH
+                            # Stream the disk image via stdin to avoid temp files on remote host
+                            cmd = [
+                                "ssh", ssh_host,
+                                "qemu-img", "convert",
+                                "-f", "raw",
+                                "-O", "raw",
+                                "-p",  # Show progress
+                                "-",   # Read from stdin
+                                f"rbd:{rbd_pool}/{rbd_image}"
+                            ]
+
+                            with open(disk_file, 'rb') as f:
+                                result = subprocess.run(
+                                    cmd,
+                                    stdin=f,
+                                    capture_output=True,
+                                    text=True,
+                                    check=True,
+                                    timeout=7200  # 2 hour timeout for large disks
+                                )
+
+                            logger.info(f"Uploaded disk {target_dev} to RBD: {rbd_pool}/{rbd_image}")
+
+                            # Update XML for RBD disk
+                            disk_elem.set("type", "network")
+                            disk_elem.set("device", "disk")
+
+                            # Clear old source and rebuild for RBD
+                            source_elem.clear()
+                            source_elem.set("protocol", "rbd")
+                            source_elem.set("name", f"{rbd_pool}/{rbd_image}")
+
+                            # Add Ceph monitor hosts
+                            for monitor in rbd_cfg.get("monitors", []):
+                                host_elem = ET.SubElement(source_elem, "host")
+                                host_elem.set("name", monitor["host"])
+                                host_elem.set("port", str(monitor["port"]))
+
+                            # Add authentication if configured
+                            if rbd_cfg.get("auth_username"):
+                                # Remove existing auth if present
+                                existing_auth = disk_elem.find("auth")
+                                if existing_auth is not None:
+                                    disk_elem.remove(existing_auth)
+
+                                auth_elem = ET.SubElement(disk_elem, "auth")
+                                auth_elem.set("username", rbd_cfg["auth_username"])
+                                secret_elem = ET.SubElement(auth_elem, "secret")
+                                secret_elem.set("type", "ceph")
+                                secret_elem.set("uuid", rbd_cfg["secret_uuid"])
+
+                            # Ensure driver is set correctly for RBD
+                            driver_elem = disk_elem.find("driver")
+                            if driver_elem is None:
+                                driver_elem = ET.SubElement(disk_elem, "driver")
+                            driver_elem.set("name", "qemu")
+                            driver_elem.set("type", "raw")
+
+                            restored_disks.append({
+                                "target": target_dev,
+                                "type": "rbd",
+                                "pool": rbd_pool,
+                                "image": rbd_image,
+                                "size": disk_file.stat().st_size
+                            })
+
                         except subprocess.CalledProcessError as e:
-                            logger.error(f"SCP failed for {target_dev}: {e.stderr}")
-                            raise Exception(f"Failed to copy disk {target_dev}: {e.stderr}")
+                            logger.error(f"RBD upload failed for {target_dev}: {e.stderr}")
+                            raise Exception(f"Failed to upload disk {target_dev} to RBD: {e.stderr}")
+                        except subprocess.TimeoutExpired:
+                            logger.error(f"RBD upload for {target_dev} timed out")
+                            raise Exception(f"RBD upload for {target_dev} timed out after 2 hours")
+
                     else:
-                        # Local host - direct copy
-                        import shutil
-                        shutil.copy2(disk_file, new_disk_path)
-                        logger.info(f"Disk copied locally: {new_disk_path}")
+                        # Restore to file storage
+                        new_disk_name = f"{restore_name}-{target_dev}.img"
+                        new_disk_path = f"{file_storage_path}/{new_disk_name}"
 
-                    # Update disk path in XML based on disk type
-                    if disk_type == "file":
+                        logger.info(f"Copying disk {target_dev} to file: {new_disk_path}")
+
+                        if ssh_host:
+                            # Remote host - use SCP
+                            import subprocess
+                            try:
+                                cmd = ["scp", str(disk_file), f"{ssh_host}:{new_disk_path}"]
+                                subprocess.run(cmd, check=True, capture_output=True, text=True)
+                                logger.info(f"Disk copied via SCP: {new_disk_path}")
+                            except subprocess.CalledProcessError as e:
+                                logger.error(f"SCP failed for {target_dev}: {e.stderr}")
+                                raise Exception(f"Failed to copy disk {target_dev}: {e.stderr}")
+                        else:
+                            # Local host - direct copy
+                            import shutil
+                            shutil.copy2(disk_file, new_disk_path)
+                            logger.info(f"Disk copied locally: {new_disk_path}")
+
+                        # Update XML for file disk
+                        disk_elem.set("type", "file")
+                        source_elem.clear()
                         source_elem.set("file", new_disk_path)
-                    elif disk_type == "block":
-                        source_elem.set("dev", new_disk_path)
 
-                    restored_disks.append({
-                        "target": target_dev,
-                        "path": new_disk_path,
-                        "size": disk_file.stat().st_size
-                    })
+                        restored_disks.append({
+                            "target": target_dev,
+                            "type": "file",
+                            "path": new_disk_path,
+                            "size": disk_file.stat().st_size
+                        })
 
                 # Convert XML back to string
                 modified_xml = ET.tostring(root, encoding='unicode')
