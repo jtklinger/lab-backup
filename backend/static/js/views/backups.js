@@ -289,15 +289,21 @@ async function restoreBackup(backupId) {
 
                 <div class="form-group">
                     <label class="form-label">Storage Type</label>
-                    <select class="form-input" name="storage_type">
+                    <select class="form-input" name="storage_type" id="storageTypeSelect">
                         <option value="auto">Auto (detect from backup)</option>
                         <option value="file">File (/var/lib/libvirt/images)</option>
                         <option value="rbd">RBD (Ceph storage)</option>
                     </select>
-                    <div class="form-help">
+                    <div class="form-help" id="storageTypeHelp">
                         <strong>Auto:</strong> Restores to the same storage type as the original backup<br>
                         <strong>File:</strong> Force restore to file-based storage (use for hosts without Ceph)<br>
                         <strong>RBD:</strong> Force restore to Ceph RBD storage (requires Ceph cluster)
+                    </div>
+                    <div class="alert alert-error" id="storageTypeError" style="margin-top: 0.5rem; display: none;">
+                        <div class="alert-icon">✕</div>
+                        <div class="alert-content">
+                            Selected host has no storage configuration. Cannot restore to this host.
+                        </div>
                     </div>
                 </div>
 
@@ -323,9 +329,19 @@ async function restoreBackup(backupId) {
                 const form = document.getElementById('restoreForm');
                 const formData = getFormData(form);
 
+                // Validate storage configuration
+                const targetHostId = formData.target_host_id ? parseInt(formData.target_host_id) : null;
+                if (targetHostId) {
+                    const selectedHost = kvmHosts.find(h => h.id === targetHostId);
+                    if (selectedHost && !selectedHost.storage_capabilities) {
+                        notify.error('Selected host has no storage configuration');
+                        return;
+                    }
+                }
+
                 // Convert target_host_id to number or null
                 const data = {
-                    target_host_id: formData.target_host_id ? parseInt(formData.target_host_id) : null,
+                    target_host_id: targetHostId,
                     new_name: formData.new_name || null,
                     overwrite: formData.overwrite || false,
                     storage_type: formData.storage_type || 'auto',
@@ -352,6 +368,73 @@ async function restoreBackup(backupId) {
         });
 
         modal.show();
+
+        // Add dynamic storage type filtering based on selected host
+        if (kvmHosts.length > 0) {
+            const targetHostSelect = modal.overlay.querySelector('select[name="target_host_id"]');
+            const storageTypeSelect = document.getElementById('storageTypeSelect');
+            const storageTypeHelp = document.getElementById('storageTypeHelp');
+            const storageTypeError = document.getElementById('storageTypeError');
+
+            const updateStorageOptions = () => {
+                const targetHostId = targetHostSelect.value;
+
+                // Reset error state
+                storageTypeError.style.display = 'none';
+                storageTypeSelect.disabled = false;
+
+                if (!targetHostId) {
+                    // Original host - show all options
+                    storageTypeSelect.querySelector('option[value="auto"]').disabled = false;
+                    storageTypeSelect.querySelector('option[value="file"]').disabled = false;
+                    storageTypeSelect.querySelector('option[value="rbd"]').disabled = false;
+                    storageTypeHelp.style.display = 'block';
+                } else {
+                    // Specific host selected - filter by capabilities
+                    const selectedHost = kvmHosts.find(h => h.id === parseInt(targetHostId));
+
+                    if (!selectedHost || !selectedHost.storage_capabilities) {
+                        // No storage configuration
+                        storageTypeError.style.display = 'block';
+                        storageTypeHelp.style.display = 'none';
+                        storageTypeSelect.disabled = true;
+                        return;
+                    }
+
+                    const caps = selectedHost.storage_capabilities;
+
+                    // Enable/disable based on what host supports
+                    storageTypeSelect.querySelector('option[value="auto"]').disabled = false; // Auto always available
+                    storageTypeSelect.querySelector('option[value="file"]').disabled = !caps.supports_file;
+                    storageTypeSelect.querySelector('option[value="rbd"]').disabled = !caps.supports_rbd;
+
+                    // If current selection is disabled, switch to auto
+                    const currentValue = storageTypeSelect.value;
+                    if (currentValue === 'file' && !caps.supports_file) {
+                        storageTypeSelect.value = 'auto';
+                    } else if (currentValue === 'rbd' && !caps.supports_rbd) {
+                        storageTypeSelect.value = 'auto';
+                    }
+
+                    // Update help text to show what's available
+                    let helpText = '<strong>Auto:</strong> Restores to the same storage type as the original backup<br>';
+                    if (caps.supports_file) {
+                        helpText += `<strong>File:</strong> Available at ${caps.file_storage_path || '/var/lib/libvirt/images'}<br>`;
+                    }
+                    if (caps.supports_rbd) {
+                        helpText += `<strong>RBD:</strong> Available on Ceph pool '${caps.rbd_default_pool || 'vms'}'`;
+                    }
+                    storageTypeHelp.innerHTML = helpText;
+                    storageTypeHelp.style.display = 'block';
+                }
+            };
+
+            // Add event listener
+            targetHostSelect.addEventListener('change', updateStorageOptions);
+
+            // Run initial update
+            updateStorageOptions();
+        }
 
     } catch (error) {
         notify.error('Failed to load restore dialog: ' + error.message);

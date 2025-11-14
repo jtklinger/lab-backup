@@ -16,6 +16,43 @@ from backend.services.kvm.backup import KVMBackupService
 router = APIRouter()
 
 
+def compute_storage_capabilities(config: Optional[dict]) -> Optional[StorageCapabilities]:
+    """
+    Compute storage capabilities from KVM host config.
+
+    Returns None if config is missing or has no storage configuration.
+    """
+    if not config or "storage" not in config:
+        return None
+
+    storage_config = config.get("storage", {})
+
+    # Check for file storage
+    supports_file = "file_storage_path" in storage_config
+    file_storage_path = storage_config.get("file_storage_path")
+
+    # Check for RBD storage
+    supports_rbd = "rbd" in storage_config and storage_config["rbd"] is not None
+    rbd_default_pool = None
+    if supports_rbd:
+        rbd_default_pool = storage_config["rbd"].get("default_pool")
+
+    return StorageCapabilities(
+        supports_file=supports_file,
+        file_storage_path=file_storage_path,
+        supports_rbd=supports_rbd,
+        rbd_default_pool=rbd_default_pool
+    )
+
+
+class StorageCapabilities(BaseModel):
+    """Storage capabilities for a KVM host."""
+    supports_file: bool
+    file_storage_path: Optional[str] = None
+    supports_rbd: bool
+    rbd_default_pool: Optional[str] = None
+
+
 class KVMHostCreate(BaseModel):
     """KVM host creation model."""
     name: str
@@ -32,6 +69,7 @@ class KVMHostResponse(BaseModel):
     uri: str
     enabled: bool
     last_sync: Optional[str]
+    storage_capabilities: Optional[StorageCapabilities] = None
 
     class Config:
         from_attributes = True
@@ -61,7 +99,21 @@ async def list_hosts(
     stmt = select(KVMHost)
     result = await db.execute(stmt)
     hosts = result.scalars().all()
-    return hosts
+
+    # Compute storage capabilities for each host
+    response = []
+    for host in hosts:
+        host_dict = {
+            "id": host.id,
+            "name": host.name,
+            "uri": host.uri,
+            "enabled": host.enabled,
+            "last_sync": host.last_sync.isoformat() if host.last_sync else None,
+            "storage_capabilities": compute_storage_capabilities(host.config)
+        }
+        response.append(host_dict)
+
+    return response
 
 
 @router.post("/hosts", response_model=KVMHostResponse, status_code=status.HTTP_201_CREATED)
