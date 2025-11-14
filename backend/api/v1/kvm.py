@@ -16,6 +16,14 @@ from backend.services.kvm.backup import KVMBackupService
 router = APIRouter()
 
 
+class StorageCapabilities(BaseModel):
+    """Storage capabilities for a KVM host."""
+    supports_file: bool
+    file_storage_path: Optional[str] = None
+    supports_rbd: bool
+    rbd_default_pool: Optional[str] = None
+
+
 def compute_storage_capabilities(config: Optional[dict]) -> Optional[StorageCapabilities]:
     """
     Compute storage capabilities from KVM host config.
@@ -43,14 +51,6 @@ def compute_storage_capabilities(config: Optional[dict]) -> Optional[StorageCapa
         supports_rbd=supports_rbd,
         rbd_default_pool=rbd_default_pool
     )
-
-
-class StorageCapabilities(BaseModel):
-    """Storage capabilities for a KVM host."""
-    supports_file: bool
-    file_storage_path: Optional[str] = None
-    supports_rbd: bool
-    rbd_default_pool: Optional[str] = None
 
 
 class KVMHostCreate(BaseModel):

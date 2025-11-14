@@ -60,6 +60,7 @@ services:
       - LOG_LEVEL=info
     volumes:
       - ./backend:/app/backend
+      - ./database:/app/database
       - backup_data:/backups
       - ssl_certs:/app/certs
       - /var/run/libvirt:/var/run/libvirt
@@ -91,6 +92,7 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
     volumes:
       - ./backend:/app/backend
+      - ./database:/app/database
       - backup_data:/backups
       - /var/run/libvirt:/var/run/libvirt
       - /var/run/podman:/var/run/podman
@@ -118,6 +120,7 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
     volumes:
       - ./backend:/app/backend
+      - ./database:/app/database
     depends_on:
       postgres:
         condition: service_healthy
