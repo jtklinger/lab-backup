@@ -288,6 +288,20 @@ async function restoreBackup(backupId) {
                 ` : ''}
 
                 <div class="form-group">
+                    <label class="form-label">Storage Type</label>
+                    <select class="form-input" name="storage_type">
+                        <option value="auto">Auto (detect from backup)</option>
+                        <option value="file">File (/var/lib/libvirt/images)</option>
+                        <option value="rbd">RBD (Ceph storage)</option>
+                    </select>
+                    <div class="form-help">
+                        <strong>Auto:</strong> Restores to the same storage type as the original backup<br>
+                        <strong>File:</strong> Force restore to file-based storage (use for hosts without Ceph)<br>
+                        <strong>RBD:</strong> Force restore to Ceph RBD storage (requires Ceph cluster)
+                    </div>
+                </div>
+
+                <div class="form-group">
                     <label class="form-label">New Name</label>
                     <input type="text" class="form-input" name="new_name"
                            placeholder="Leave empty to use original name">
@@ -313,7 +327,9 @@ async function restoreBackup(backupId) {
                 const data = {
                     target_host_id: formData.target_host_id ? parseInt(formData.target_host_id) : null,
                     new_name: formData.new_name || null,
-                    overwrite: formData.overwrite || false
+                    overwrite: formData.overwrite || false,
+                    storage_type: formData.storage_type || 'auto',
+                    storage_config: null
                 };
 
                 const loading = showLoading(modal.overlay);
