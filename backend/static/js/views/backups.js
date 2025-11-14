@@ -255,49 +255,91 @@ async function viewBackupDetails(backupId) {
 }
 
 async function restoreBackup(backupId) {
-    const modal = new Modal('Restore Backup', `
-        <form id="restoreForm">
-            <div class="form-group">
-                <label class="form-label">Target Host (Optional)</label>
-                <input type="number" class="form-input" name="target_host_id"
-                       placeholder="Leave empty to restore to original host">
-                <div class="form-help">Specify a different host ID to restore to a different location</div>
-            </div>
-            <div class="form-group">
-                <label class="form-label">New Name (Optional)</label>
-                <input type="text" class="form-input" name="new_name"
-                       placeholder="Leave empty to use original name">
-                <div class="form-help">Specify a new name for the restored VM/container</div>
-            </div>
-            <div class="form-group">
-                <label style="display: flex; align-items: center; gap: 0.5rem;">
-                    <input type="checkbox" name="overwrite">
-                    <span>Overwrite if exists</span>
-                </label>
-                <div class="form-help">WARNING: This will replace the existing VM/container</div>
-            </div>
-        </form>
-    `);
+    try {
+        // Get backup details to determine source type
+        const backup = await api.getBackup(backupId);
 
-    modal.setOnConfirm(async () => {
-        try {
-            const form = document.getElementById('restoreForm');
-            const data = getFormData(form);
-
-            const loading = showLoading(modal.overlay);
-            await api.restoreBackup(backupId, data);
-            hideLoading(loading);
-
-            notify.success('Restore initiated successfully');
-            modal.close();
-            setTimeout(() => loadView('jobs'), 1000);
-
-        } catch (error) {
-            notify.error('Failed to restore backup: ' + error.message);
+        // Load KVM hosts for VM backups
+        let kvmHosts = [];
+        if (backup.source_type === 'vm') {
+            kvmHosts = await api.listKVMHosts();
         }
-    });
 
-    modal.show();
+        const modal = new Modal('Restore Backup', `
+            <form id="restoreForm">
+                <div class="alert alert-info" style="margin-bottom: 1rem;">
+                    <div class="alert-icon">ℹ</div>
+                    <div class="alert-content">
+                        Restoring backup of <strong>${backup.source_name}</strong>
+                    </div>
+                </div>
+
+                ${kvmHosts.length > 0 ? `
+                    <div class="form-group">
+                        <label class="form-label">Target Host</label>
+                        <select class="form-input" name="target_host_id">
+                            <option value="">Original Host (default)</option>
+                            ${kvmHosts.map(host => `
+                                <option value="${host.id}">${host.name} (${host.hostname})</option>
+                            `).join('')}
+                        </select>
+                        <div class="form-help">Select a different host to restore to a different location</div>
+                    </div>
+                ` : ''}
+
+                <div class="form-group">
+                    <label class="form-label">New Name</label>
+                    <input type="text" class="form-input" name="new_name"
+                           placeholder="Leave empty to use original name">
+                    <div class="form-help">Specify a new name for the restored VM/container</div>
+                </div>
+
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" name="overwrite">
+                        <span>Overwrite if exists</span>
+                    </label>
+                    <div class="form-help">WARNING: This will replace the existing VM/container with the same name</div>
+                </div>
+            </form>
+        `);
+
+        modal.setOnConfirm(async () => {
+            try {
+                const form = document.getElementById('restoreForm');
+                const formData = getFormData(form);
+
+                // Convert target_host_id to number or null
+                const data = {
+                    target_host_id: formData.target_host_id ? parseInt(formData.target_host_id) : null,
+                    new_name: formData.new_name || null,
+                    overwrite: formData.overwrite || false
+                };
+
+                const loading = showLoading(modal.overlay);
+                const result = await api.restoreBackup(backupId, data);
+                hideLoading(loading);
+
+                notify.success(`Restore queued successfully! Job ID: ${result.job_id}`);
+                modal.close();
+
+                // Optionally navigate to jobs view
+                setTimeout(() => {
+                    if (confirm('Restore has been queued. Would you like to view the jobs page?')) {
+                        loadView('jobs');
+                    }
+                }, 500);
+
+            } catch (error) {
+                notify.error('Failed to restore backup: ' + error.message);
+            }
+        });
+
+        modal.show();
+
+    } catch (error) {
+        notify.error('Failed to load restore dialog: ' + error.message);
+    }
 }
 
 async function deleteBackupConfirm(backupId) {

@@ -162,10 +162,10 @@ class APIClient {
         });
     }
 
-    async restoreBackup(id, options = {}) {
-        return this.request(`/backups/${id}/restore`, {
+    async restoreBackup(backupId, data) {
+        return this.request(`/backups/${backupId}/restore`, {
             method: 'POST',
-            body: options,
+            body: data
         });
     }
 
