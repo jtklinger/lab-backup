@@ -236,16 +236,28 @@ async def delete_backup(
     return None
 
 
-@router.post("/{backup_id}/restore")
+class RestoreBackupRequest(BaseModel):
+    """Request model for restoring a backup."""
+    target_host_id: Optional[int] = Field(None, description="ID of target host (None = original host)")
+    new_name: Optional[str] = Field(None, description="New name for restored VM/container (None = original name)")
+    overwrite: bool = Field(False, description="Whether to overwrite existing VM/container with same name")
+    storage_type: str = Field("auto", description="Storage type: auto (detect from backup), file, or rbd")
+    storage_config: Optional[dict] = Field(None, description="Optional storage-specific configuration override")
+
+
+@router.post("/{backup_id}/restore", status_code=status.HTTP_202_ACCEPTED)
 async def restore_backup(
     backup_id: int,
-    target_host_id: Optional[int] = None,
-    new_name: Optional[str] = None,
-    overwrite: bool = False,
+    request: RestoreBackupRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.OPERATOR))
 ):
-    """Restore a backup (VM or container)."""
+    """
+    Restore a backup to a KVM host.
+
+    The restore operation is queued as a background job and processed asynchronously.
+    You can monitor the progress via the /jobs endpoint.
+    """
     backup = await db.get(Backup, backup_id)
     if not backup:
         raise HTTPException(
@@ -253,14 +265,66 @@ async def restore_backup(
             detail="Backup not found"
         )
 
-    # TODO: Implement restore logic
-    # This would involve:
-    # 1. Download backup from storage
-    # 2. Extract archive
-    # 3. Restore VM/container using appropriate service
-    # 4. Handle rename/overwrite options
+    if backup.status != BackupStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot restore backup with status: {backup.status}. Only completed backups can be restored."
+        )
+
+    # Validate target host if specified
+    if request.target_host_id:
+        if backup.source_type == SourceType.VM:
+            from backend.models.infrastructure import KVMHost
+            target_host = await db.get(KVMHost, request.target_host_id)
+            if not target_host:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"KVM host with ID {request.target_host_id} not found"
+                )
+        elif backup.source_type == SourceType.CONTAINER:
+            from backend.models.infrastructure import PodmanHost
+            target_host = await db.get(PodmanHost, request.target_host_id)
+            if not target_host:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Podman host with ID {request.target_host_id} not found"
+                )
+
+    # Queue restore job via Celery
+    from backend.worker import execute_restore
+    task = execute_restore.delay(
+        backup_id,
+        request.target_host_id,
+        request.new_name,
+        request.overwrite,
+        request.storage_type,
+        request.storage_config
+    )
+
+    # Create job record
+    from backend.models.backup import Job, JobType, JobStatus
+    job = Job(
+        type=JobType.RESTORE,
+        status=JobStatus.PENDING,
+        backup_id=backup_id,
+        celery_task_id=task.id,
+        job_metadata={
+            "target_host_id": request.target_host_id,
+            "new_name": request.new_name,
+            "overwrite": request.overwrite,
+            "storage_type": request.storage_type,
+            "storage_config": request.storage_config,
+            "triggered_by": current_user.username,
+            "triggered_at": datetime.utcnow().isoformat()
+        }
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
 
     return {
-        "message": "Restore functionality coming soon",
-        "backup_id": backup_id
+        "message": "Restore job queued successfully",
+        "job_id": job.id,
+        "backup_id": backup_id,
+        "task_id": task.id
     }

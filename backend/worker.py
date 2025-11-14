@@ -471,6 +471,286 @@ async def _backup_container(db, schedule, backup, job):
         }
 
 
+@celery_app.task(name="backend.worker.execute_restore")
+def execute_restore(backup_id: int, target_host_id: Optional[int] = None, new_name: Optional[str] = None, overwrite: bool = False, storage_type: str = "auto", storage_config: Optional[dict] = None):
+    """
+    Execute a restore job.
+
+    Args:
+        backup_id: ID of the backup to restore
+        target_host_id: ID of the target host (None = original host)
+        new_name: New name for the restored VM/container (None = original name)
+        overwrite: Whether to overwrite existing VM/container
+        storage_type: Storage type: "auto" (detect from backup), "file", or "rbd"
+        storage_config: Optional storage-specific configuration override
+    """
+    # Create a new event loop for this task
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        return loop.run_until_complete(_execute_restore_async(backup_id, target_host_id, new_name, overwrite, storage_type, storage_config))
+    finally:
+        loop.close()
+
+
+async def _execute_restore_async(backup_id: int, target_host_id: Optional[int], new_name: Optional[str], overwrite: bool, storage_type: str = "auto", storage_config: Optional[dict] = None):
+    """Async implementation of restore execution."""
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    # Create a new async engine for this event loop
+    engine = create_async_engine(
+        str(settings.DATABASE_URL),
+        echo=settings.DB_ECHO,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+    )
+    SessionLocal = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+
+    async with SessionLocal() as db:
+        job = None
+        try:
+            # Get backup
+            backup = await db.get(Backup, backup_id)
+            if not backup:
+                raise Exception("Backup not found")
+
+            if backup.status != BackupStatus.COMPLETED:
+                raise Exception(f"Cannot restore backup with status: {backup.status}")
+
+            # Create job record
+            job = Job(
+                type=JobType.RESTORE,
+                status=JobStatus.RUNNING,
+                backup_id=backup_id,
+                started_at=datetime.utcnow(),
+                celery_task_id=celery_app.current_task.request.id,
+                job_metadata={
+                    "target_host_id": target_host_id,
+                    "new_name": new_name,
+                    "overwrite": overwrite
+                }
+            )
+            db.add(job)
+            await db.commit()
+
+            # Log start
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Starting restore of {backup.source_type} {backup.source_name}"
+            )
+            db.add(log)
+            await db.commit()
+
+            # Execute restore based on source type
+            if backup.source_type == SourceType.VM:
+                result = await _restore_vm(db, backup, job, target_host_id, new_name, overwrite)
+            elif backup.source_type == SourceType.CONTAINER:
+                raise Exception("Container restore not yet implemented")
+            else:
+                raise Exception(f"Unknown source type: {backup.source_type}")
+
+            # Update job
+            job.status = JobStatus.COMPLETED
+            job.completed_at = datetime.utcnow()
+
+            # Log completion
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Restore completed successfully. Restored as: {result.get('vm_name', result.get('container_name', 'unknown'))}"
+            )
+            db.add(log)
+
+            await db.commit()
+
+            return {
+                "success": True,
+                "backup_id": backup_id,
+                "result": result
+            }
+
+        except Exception as e:
+            # Update job
+            if job:
+                job.status = JobStatus.FAILED
+                job.error_message = str(e)
+                job.completed_at = datetime.utcnow()
+
+                # Log error
+                log = JobLog(
+                    job_id=job.id,
+                    level="ERROR",
+                    message=f"Restore failed: {str(e)}"
+                )
+                db.add(log)
+
+            await db.commit()
+
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        finally:
+            # Dispose engine to clean up connections
+            await engine.dispose()
+
+
+async def _restore_vm(db, backup, job, target_host_id, new_name, overwrite):
+    """Execute VM restore."""
+    from backend.models.infrastructure import VM, KVMHost
+    from backend.models.storage import StorageBackend as StorageBackendModel
+
+    # Get original VM to determine original host if target not specified
+    if target_host_id:
+        target_host = await db.get(KVMHost, target_host_id)
+        if not target_host:
+            raise Exception(f"Target KVM host with ID {target_host_id} not found")
+    else:
+        # Restore to original host
+        original_vm = await db.get(VM, backup.source_id)
+        if not original_vm:
+            raise Exception(f"Original VM with ID {backup.source_id} not found")
+        target_host = await db.get(KVMHost, original_vm.kvm_host_id)
+        if not target_host:
+            raise Exception(f"Original KVM host not found for VM {backup.source_name}")
+
+    # Log
+    log = JobLog(
+        job_id=job.id,
+        level="INFO",
+        message=f"Target KVM host: {target_host.name}"
+    )
+    db.add(log)
+    await db.commit()
+
+    # Get storage backend
+    storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
+    if not storage_backend_model:
+        raise Exception("Storage backend not found")
+
+    storage = create_storage_backend(
+        storage_backend_model.type,
+        storage_backend_model.config
+    )
+
+    # Create temp directory for restore
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        # Download backup from storage
+        log = JobLog(
+            job_id=job.id,
+            level="INFO",
+            message=f"Downloading backup from storage: {backup.storage_path}"
+        )
+        db.add(log)
+        await db.commit()
+
+        downloaded_file = temp_path / Path(backup.storage_path).name
+        await storage.download(
+            source_path=backup.storage_path,
+            destination_path=downloaded_file
+        )
+
+        # Decrypt if needed
+        file_to_extract = downloaded_file
+        if backup.storage_path.endswith('.encrypted'):
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Decrypting backup..."
+            )
+            db.add(log)
+            await db.commit()
+
+            from backend.core.encryption import decrypt_backup
+            decrypted_file = temp_path / downloaded_file.name.replace('.encrypted', '')
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: decrypt_backup(
+                    downloaded_file,
+                    decrypted_file,
+                    settings.ENCRYPTION_KEY,
+                    use_chunked=True
+                )
+            )
+            file_to_extract = decrypted_file
+
+        # Extract archive
+        log = JobLog(
+            job_id=job.id,
+            level="INFO",
+            message="Extracting backup archive..."
+        )
+        db.add(log)
+        await db.commit()
+
+        extract_dir = temp_path / "extracted"
+        extract_dir.mkdir()
+
+        def _extract():
+            import tarfile
+            with tarfile.open(file_to_extract, 'r:gz') as tar:
+                tar.extractall(extract_dir)
+
+        await asyncio.get_event_loop().run_in_executor(None, _extract)
+
+        # Find the backup directory (should be the only subdirectory)
+        backup_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+        if not backup_dirs:
+            raise Exception("No backup directory found in archive")
+
+        backup_dir = backup_dirs[0]
+
+        # Restore VM
+        log = JobLog(
+            job_id=job.id,
+            level="INFO",
+            message=f"Restoring VM to host {target_host.name}..."
+        )
+        db.add(log)
+        await db.commit()
+
+        kvm_service = KVMBackupService()
+        restore_result = await kvm_service.restore_vm(
+            uri=target_host.uri,
+            backup_dir=backup_dir,
+            new_name=new_name,
+            overwrite=overwrite
+        )
+
+        # If this is a new VM (not overwriting), create a new VM record
+        if new_name and not overwrite:
+            new_vm = VM(
+                name=restore_result["vm_name"],
+                uuid=restore_result["vm_uuid"],
+                state="shutoff",
+                vcpus=0,  # Will be updated on next discovery
+                memory=0,
+                kvm_host_id=target_host.id
+            )
+            db.add(new_vm)
+            await db.commit()
+
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Created new VM record: {new_vm.name}"
+            )
+            db.add(log)
+            await db.commit()
+
+        return restore_result
+
+
 @celery_app.task(name="backend.worker.check_scheduled_backups")
 def check_scheduled_backups():
     """Check for scheduled backups that need to run."""
