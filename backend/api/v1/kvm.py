@@ -1,6 +1,7 @@
 """
 KVM/libvirt API endpoints.
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,8 @@ from backend.models.user import User, UserRole
 from backend.models.infrastructure import KVMHost, VM
 from backend.core.security import get_current_user, require_role
 from backend.services.kvm.backup import KVMBackupService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -95,21 +98,37 @@ async def list_hosts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """List all KVM hosts."""
+    """List all KVM hosts with dynamically detected storage capabilities."""
     stmt = select(KVMHost)
     result = await db.execute(stmt)
     hosts = result.scalars().all()
 
-    # Compute storage capabilities for each host
+    # Create KVM service instance
+    kvm_service = KVMBackupService()
+
+    # Query storage capabilities dynamically for each host
     response = []
     for host in hosts:
+        # Try to query actual storage pools from the host
+        storage_caps = None
+        if host.enabled:
+            try:
+                caps_dict = await kvm_service.list_storage_pools(host.uri)
+                # Convert to StorageCapabilities model
+                storage_caps = StorageCapabilities(**caps_dict)
+            except Exception as e:
+                # Log error but don't fail the entire request
+                logger.warning(f"Failed to query storage for host {host.name}: {e}")
+                # Fall back to static config if dynamic detection fails
+                storage_caps = compute_storage_capabilities(host.config)
+
         host_dict = {
             "id": host.id,
             "name": host.name,
             "uri": host.uri,
             "enabled": host.enabled,
             "last_sync": host.last_sync.isoformat() if host.last_sync else None,
-            "storage_capabilities": compute_storage_capabilities(host.config)
+            "storage_capabilities": storage_caps
         }
         response.append(host_dict)
 

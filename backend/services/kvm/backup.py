@@ -79,6 +79,77 @@ class KVMBackupService:
             logger.error(f"Failed to list VMs: {e}")
             raise
 
+    async def list_storage_pools(self, uri: str) -> Dict[str, Any]:
+        """
+        List all storage pools on a KVM host and detect their types.
+
+        Returns:
+            Dictionary with storage capabilities:
+            - supports_file: bool
+            - file_storage_path: Optional[str]
+            - supports_rbd: bool
+            - rbd_default_pool: Optional[str]
+        """
+        try:
+            conn = await self._run_in_executor(self._get_connection, uri)
+
+            def _list_pools():
+                pools = conn.listAllStoragePools()
+
+                capabilities = {
+                    "supports_file": False,
+                    "file_storage_path": None,
+                    "supports_rbd": False,
+                    "rbd_default_pool": None,
+                }
+
+                for pool in pools:
+                    try:
+                        # Only consider active pools
+                        if not pool.isActive():
+                            continue
+
+                        pool_name = pool.name()
+                        pool_xml = pool.XMLDesc(0)
+                        pool_root = ET.fromstring(pool_xml)
+
+                        pool_type = pool_root.get("type")
+
+                        # Check for file-based storage (dir, fs, etc.)
+                        if pool_type in ["dir", "fs", "netfs", "logical", "disk"]:
+                            capabilities["supports_file"] = True
+                            # Get the path from the pool XML
+                            target = pool_root.find(".//target/path")
+                            if target is not None and target.text:
+                                # Use the first file storage path we find
+                                if not capabilities["file_storage_path"]:
+                                    capabilities["file_storage_path"] = target.text
+
+                        # Check for RBD/Ceph storage
+                        elif pool_type == "rbd":
+                            capabilities["supports_rbd"] = True
+                            # Use the first RBD pool name we find as default
+                            if not capabilities["rbd_default_pool"]:
+                                capabilities["rbd_default_pool"] = pool_name
+
+                    except Exception as e:
+                        logger.warning(f"Error processing pool {pool.name()}: {e}")
+                        continue
+
+                return capabilities
+
+            return await self._run_in_executor(_list_pools)
+
+        except libvirt.libvirtError as e:
+            logger.error(f"Failed to list storage pools: {e}")
+            # Return empty capabilities on error rather than raising
+            return {
+                "supports_file": False,
+                "file_storage_path": None,
+                "supports_rbd": False,
+                "rbd_default_pool": None,
+            }
+
     def _get_state_name(self, state: int) -> str:
         """Convert libvirt state code to name."""
         states = {
