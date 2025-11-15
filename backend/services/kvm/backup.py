@@ -142,13 +142,8 @@ class KVMBackupService:
 
         except libvirt.libvirtError as e:
             logger.error(f"Failed to list storage pools: {e}")
-            # Return empty capabilities on error rather than raising
-            return {
-                "supports_file": False,
-                "file_storage_path": None,
-                "supports_rbd": False,
-                "rbd_default_pool": None,
-            }
+            # Raise exception so fallback to static config can happen
+            raise
 
     def _get_state_name(self, state: int) -> str:
         """Convert libvirt state code to name."""

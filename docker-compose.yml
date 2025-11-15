@@ -63,6 +63,7 @@ services:
       - ./database:/app/database
       - backup_data:/backups
       - ssl_certs:/app/certs
+      - ~/.ssh:/root/.ssh
       - /var/run/libvirt:/var/run/libvirt
       - /var/run/podman:/var/run/podman
     ports:
@@ -94,6 +95,7 @@ services:
       - ./backend:/app/backend
       - ./database:/app/database
       - backup_data:/backups
+      - ~/.ssh:/root/.ssh
       - /var/run/libvirt:/var/run/libvirt
       - /var/run/podman:/var/run/podman
     depends_on:
