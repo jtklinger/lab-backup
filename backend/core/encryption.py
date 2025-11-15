@@ -344,3 +344,93 @@ def decrypt_backup(
         return decryptor.decrypt_file_chunked(input_path, output_path)
     else:
         return decryptor.decrypt_file(input_path, output_path)
+
+
+# SSH Key Encryption Utilities
+
+class SSHKeyEncryption:
+    """Handle encryption and decryption of SSH private keys."""
+
+    def __init__(self, secret_key: str):
+        """
+        Initialize SSH key encryption with application secret key.
+
+        Args:
+            secret_key: Application SECRET_KEY from environment
+        """
+        # Derive a Fernet key from the secret key using PBKDF2
+        # Use a fixed salt since we're deriving from the app secret
+        salt = b'ssh_key_encryption_salt_v1'
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        fernet_key = base64.urlsafe_b64encode(kdf.derive(secret_key.encode()))
+        self.fernet = Fernet(fernet_key)
+
+    def encrypt_private_key(self, private_key: str) -> str:
+        """
+        Encrypt an SSH private key.
+
+        Args:
+            private_key: SSH private key in PEM format
+
+        Returns:
+            Encrypted private key as base64 string
+        """
+        try:
+            encrypted_bytes = self.fernet.encrypt(private_key.encode('utf-8'))
+            return base64.b64encode(encrypted_bytes).decode('utf-8')
+        except Exception as e:
+            logger.error(f"Failed to encrypt SSH private key: {e}")
+            raise
+
+    def decrypt_private_key(self, encrypted_key: str) -> str:
+        """
+        Decrypt an SSH private key.
+
+        Args:
+            encrypted_key: Encrypted private key as base64 string
+
+        Returns:
+            Decrypted SSH private key in PEM format
+        """
+        try:
+            encrypted_bytes = base64.b64decode(encrypted_key.encode('utf-8'))
+            decrypted_bytes = self.fernet.decrypt(encrypted_bytes)
+            return decrypted_bytes.decode('utf-8')
+        except Exception as e:
+            logger.error(f"Failed to decrypt SSH private key: {e}")
+            raise
+
+
+def encrypt_ssh_private_key(private_key: str, secret_key: str) -> str:
+    """
+    Encrypt an SSH private key using the application secret.
+
+    Args:
+        private_key: SSH private key in PEM format
+        secret_key: Application SECRET_KEY
+
+    Returns:
+        Encrypted private key as base64 string
+    """
+    encryptor = SSHKeyEncryption(secret_key)
+    return encryptor.encrypt_private_key(private_key)
+
+
+def decrypt_ssh_private_key(encrypted_key: str, secret_key: str) -> str:
+    """
+    Decrypt an SSH private key using the application secret.
+
+    Args:
+        encrypted_key: Encrypted private key as base64 string
+        secret_key: Application SECRET_KEY
+
+    Returns:
+        Decrypted SSH private key in PEM format
+    """
+    decryptor = SSHKeyEncryption(secret_key)
+    return decryptor.decrypt_private_key(encrypted_key)

@@ -290,6 +290,35 @@ class APIClient {
         return this.request(`/kvm/vms/${id}`);
     }
 
+    // SSH Key endpoints
+    async listSSHKeys(hostId) {
+        return this.request(`/kvm/hosts/${hostId}/ssh-keys`);
+    }
+
+    async uploadSSHKey(hostId, data) {
+        return this.request(`/kvm/hosts/${hostId}/ssh-keys`, {
+            method: 'POST',
+            body: data,
+        });
+    }
+
+    async generateSSHKey(hostId, params) {
+        return this.request(`/kvm/hosts/${hostId}/ssh-keys/generate`, {
+            method: 'POST',
+            body: params,
+        });
+    }
+
+    async getPublicKey(hostId, keyId) {
+        return this.request(`/kvm/hosts/${hostId}/ssh-keys/${keyId}/public`);
+    }
+
+    async deleteSSHKey(hostId, keyId) {
+        return this.request(`/kvm/hosts/${hostId}/ssh-keys/${keyId}`, {
+            method: 'DELETE',
+        });
+    }
+
     // Podman endpoints
     async listPodmanHosts() {
         return this.request('/podman/hosts');

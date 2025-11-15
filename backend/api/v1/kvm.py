@@ -2,6 +2,9 @@
 KVM/libvirt API endpoints.
 """
 import logging
+import subprocess
+import tempfile
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +13,10 @@ from typing import List, Optional
 
 from backend.models.base import get_db
 from backend.models.user import User, UserRole
-from backend.models.infrastructure import KVMHost, VM
+from backend.models.infrastructure import KVMHost, VM, SSHKey
 from backend.core.security import get_current_user, require_role
+from backend.core.config import get_settings
+from backend.core.encryption import encrypt_ssh_private_key, decrypt_ssh_private_key
 from backend.services.kvm.backup import KVMBackupService
 
 logger = logging.getLogger(__name__)
@@ -93,6 +98,32 @@ class VMResponse(BaseModel):
         from_attributes = True
 
 
+class SSHKeyCreate(BaseModel):
+    """SSH key upload model."""
+    private_key: str
+    public_key: str
+    key_type: str  # rsa, ed25519, etc.
+
+
+class SSHKeyGenerate(BaseModel):
+    """SSH key generation model."""
+    key_type: str = "ed25519"  # or rsa
+    key_size: Optional[int] = None  # For RSA keys (2048, 4096, etc.)
+
+
+class SSHKeyResponse(BaseModel):
+    """SSH key response model (without private key)."""
+    id: int
+    kvm_host_id: int
+    public_key: str
+    key_type: str
+    created_at: datetime
+    last_used: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
 @router.get("/hosts", response_model=List[KVMHostResponse])
 async def list_hosts(
     db: AsyncSession = Depends(get_db),
@@ -113,6 +144,10 @@ async def list_hosts(
         storage_caps = None
         if host.enabled:
             try:
+                # Setup SSH key from database if available
+                await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
+
+                # Query storage capabilities
                 caps_dict = await kvm_service.list_storage_pools(host.uri)
                 # Convert to StorageCapabilities model
                 storage_caps = StorageCapabilities(**caps_dict)
@@ -202,6 +237,11 @@ async def list_vms(
     if sync:
         # Sync VMs from libvirt
         kvm_service = KVMBackupService()
+
+        # Setup SSH key from database if available
+        await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
+
+        # List VMs from the host
         vms_data = await kvm_service.list_vms(host.uri)
 
         # Update database
@@ -256,6 +296,10 @@ async def refresh_host(
     # Sync VMs from libvirt
     kvm_service = KVMBackupService()
     try:
+        # Setup SSH key from database if available
+        await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
+
+        # List VMs from the host
         vms_data = await kvm_service.list_vms(host.uri)
     except Exception as e:
         raise HTTPException(
@@ -311,3 +355,203 @@ async def get_vm(
             detail="VM not found"
         )
     return vm
+
+
+# SSH Key Management Endpoints
+
+@router.post("/hosts/{host_id}/ssh-keys", response_model=SSHKeyResponse, status_code=status.HTTP_201_CREATED)
+async def upload_ssh_key(
+    host_id: int,
+    key_data: SSHKeyCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """Upload an existing SSH private key for a KVM host."""
+    # Verify host exists
+    host = await db.get(KVMHost, host_id)
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="KVM host not found"
+        )
+
+    # Get settings for encryption key
+    settings = get_settings()
+
+    # Encrypt the private key
+    try:
+        encrypted_private_key = encrypt_ssh_private_key(
+            key_data.private_key,
+            settings.SECRET_KEY
+        )
+    except Exception as e:
+        logger.error(f"Failed to encrypt SSH private key: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to encrypt SSH private key"
+        )
+
+    # Create SSH key record
+    ssh_key = SSHKey(
+        kvm_host_id=host_id,
+        private_key_encrypted=encrypted_private_key,
+        public_key=key_data.public_key,
+        key_type=key_data.key_type
+    )
+
+    db.add(ssh_key)
+    await db.commit()
+    await db.refresh(ssh_key)
+
+    logger.info(f"SSH key uploaded for KVM host {host.name} (ID: {host_id})")
+
+    return ssh_key
+
+
+@router.post("/hosts/{host_id}/ssh-keys/generate", response_model=SSHKeyResponse, status_code=status.HTTP_201_CREATED)
+async def generate_ssh_key(
+    host_id: int,
+    key_params: SSHKeyGenerate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """Generate a new SSH key pair for a KVM host."""
+    # Verify host exists
+    host = await db.get(KVMHost, host_id)
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="KVM host not found"
+        )
+
+    # Generate SSH key pair using ssh-keygen
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            key_path = f"{tmpdir}/id_{key_params.key_type}"
+
+            # Build ssh-keygen command
+            cmd = ["ssh-keygen", "-t", key_params.key_type, "-f", key_path, "-N", ""]
+
+            # Add key size for RSA
+            if key_params.key_type == "rsa" and key_params.key_size:
+                cmd.extend(["-b", str(key_params.key_size)])
+
+            # Generate key
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"ssh-keygen failed: {result.stderr}")
+
+            # Read generated keys
+            with open(key_path, 'r') as f:
+                private_key = f.read()
+            with open(f"{key_path}.pub", 'r') as f:
+                public_key = f.read()
+
+    except Exception as e:
+        logger.error(f"Failed to generate SSH key: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate SSH key: {str(e)}"
+        )
+
+    # Get settings for encryption key
+    settings = get_settings()
+
+    # Encrypt the private key
+    try:
+        encrypted_private_key = encrypt_ssh_private_key(
+            private_key,
+            settings.SECRET_KEY
+        )
+    except Exception as e:
+        logger.error(f"Failed to encrypt SSH private key: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to encrypt SSH private key"
+        )
+
+    # Create SSH key record
+    ssh_key = SSHKey(
+        kvm_host_id=host_id,
+        private_key_encrypted=encrypted_private_key,
+        public_key=public_key.strip(),
+        key_type=key_params.key_type
+    )
+
+    db.add(ssh_key)
+    await db.commit()
+    await db.refresh(ssh_key)
+
+    logger.info(f"SSH key generated for KVM host {host.name} (ID: {host_id})")
+
+    return ssh_key
+
+
+@router.get("/hosts/{host_id}/ssh-keys", response_model=List[SSHKeyResponse])
+async def list_ssh_keys(
+    host_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List all SSH keys for a KVM host."""
+    # Verify host exists
+    host = await db.get(KVMHost, host_id)
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="KVM host not found"
+        )
+
+    # Get SSH keys
+    stmt = select(SSHKey).where(SSHKey.kvm_host_id == host_id)
+    result = await db.execute(stmt)
+    ssh_keys = result.scalars().all()
+
+    return ssh_keys
+
+
+@router.delete("/hosts/{host_id}/ssh-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_ssh_key(
+    host_id: int,
+    key_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """Delete an SSH key."""
+    # Get the SSH key
+    ssh_key = await db.get(SSHKey, key_id)
+    if not ssh_key or ssh_key.kvm_host_id != host_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="SSH key not found"
+        )
+
+    await db.delete(ssh_key)
+    await db.commit()
+
+    logger.info(f"SSH key deleted (ID: {key_id}) for KVM host (ID: {host_id})")
+
+    return None
+
+
+@router.get("/hosts/{host_id}/ssh-keys/{key_id}/public")
+async def get_public_key(
+    host_id: int,
+    key_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get the public key for installation on the target host."""
+    # Get the SSH key
+    ssh_key = await db.get(SSHKey, key_id)
+    if not ssh_key or ssh_key.kvm_host_id != host_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="SSH key not found"
+        )
+
+    return {
+        "public_key": ssh_key.public_key,
+        "key_type": ssh_key.key_type,
+        "instructions": f"Add this public key to ~/.ssh/authorized_keys on the target host"
+    }

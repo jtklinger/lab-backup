@@ -2,8 +2,10 @@
 Infrastructure models for KVM hosts, VMs, Podman hosts, and containers.
 """
 from typing import Optional, Dict, Any
-from sqlalchemy import String, Integer, Boolean, JSON, ForeignKey
+from datetime import datetime
+from sqlalchemy import String, Integer, Boolean, JSON, ForeignKey, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import func
 
 from backend.models.base import Base
 
@@ -30,6 +32,34 @@ class KVMHost(Base):
         back_populates="kvm_host",
         cascade="all, delete-orphan"
     )
+    ssh_keys: Mapped[list["SSHKey"]] = relationship(
+        back_populates="kvm_host",
+        cascade="all, delete-orphan"
+    )
+
+
+class SSHKey(Base):
+    """SSH key for KVM host authentication."""
+
+    __tablename__ = "ssh_keys"
+
+    kvm_host_id: Mapped[int] = mapped_column(
+        ForeignKey("kvm_hosts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    private_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    key_type: Mapped[str] = mapped_column(String(50), nullable=False)  # rsa, ed25519, etc.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False
+    )
+    last_used: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Relationships
+    kvm_host: Mapped["KVMHost"] = relationship(back_populates="ssh_keys")
 
 
 class VM(Base):

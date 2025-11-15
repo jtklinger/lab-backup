@@ -2,6 +2,8 @@
 KVM/libvirt backup service.
 """
 import asyncio
+import os
+import re
 import tempfile
 import tarfile
 import json
@@ -11,6 +13,9 @@ from concurrent.futures import ThreadPoolExecutor
 import libvirt
 import xml.etree.ElementTree as ET
 import logging
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.services.kvm.ssh_manager import SSHKeyManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,153 @@ class KVMBackupService:
         """Run blocking libvirt call in executor."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(self.executor, func, *args)
+
+    @staticmethod
+    def _extract_hostname_from_uri(uri: str) -> Optional[str]:
+        """
+        Extract hostname from a libvirt URI.
+
+        Args:
+            uri: libvirt URI (e.g., qemu+ssh://user@hostname/system)
+
+        Returns:
+            Hostname or None if not found
+        """
+        # Match pattern: qemu+ssh://[user@]hostname[:port]/system
+        match = re.search(r'qemu\+ssh://(?:[^@]+@)?([^:/]+)', uri)
+        if match:
+            return match.group(1)
+        return None
+
+    async def setup_ssh_key_for_host(
+        self,
+        db: AsyncSession,
+        kvm_host_id: int,
+        uri: str
+    ) -> bool:
+        """
+        Set up SSH key from database for a KVM host.
+
+        This will:
+        1. Check if there's an SSH key in the database
+        2. If yes, decrypt and write to ~/.ssh/kvm_host_{id}_key
+        3. Update ~/.ssh/config to use that key for the specific hostname
+        4. Return True if database key was set up, False otherwise
+
+        Args:
+            db: Database session
+            kvm_host_id: ID of the KVM host
+            uri: libvirt URI for the host
+
+        Returns:
+            True if database SSH key was configured, False if using default keys
+        """
+        # Extract hostname from URI
+        hostname = self._extract_hostname_from_uri(uri)
+        if not hostname:
+            logger.warning(f"Could not extract hostname from URI: {uri}")
+            return False
+
+        # Check for database SSH key
+        ssh_manager = SSHKeyManager(db)
+        ssh_key = await ssh_manager.get_ssh_key(kvm_host_id)
+
+        if not ssh_key:
+            logger.debug(f"No database SSH key for KVM host {kvm_host_id}, using default keys")
+            return False
+
+        try:
+            # Decrypt the private key
+            private_key = await ssh_manager.decrypt_key(ssh_key)
+
+            # Determine key filename based on type
+            key_filename = f"kvm_host_{kvm_host_id}_key"
+            key_path = os.path.expanduser(f"~/.ssh/{key_filename}")
+
+            # Write the private key
+            with open(key_path, 'w') as f:
+                f.write(private_key)
+
+            # Set proper permissions
+            os.chmod(key_path, 0o600)
+
+            logger.info(f"Wrote database SSH key to {key_path}")
+
+            # Update ~/.ssh/config to use this key for the specific host
+            ssh_config_path = os.path.expanduser("~/.ssh/config")
+
+            # Read existing config
+            existing_config = ""
+            if os.path.exists(ssh_config_path):
+                with open(ssh_config_path, 'r') as f:
+                    existing_config = f.read()
+
+            # Check if there's already a config entry for this host
+            host_pattern = f"Host {hostname}"
+            identity_line = f"    IdentityFile ~/.ssh/{key_filename}"
+
+            if host_pattern in existing_config:
+                # Update existing entry - replace or add IdentityFile line
+                lines = existing_config.split('\n')
+                new_lines = []
+                in_host_block = False
+                identity_added = False
+
+                for line in lines:
+                    if line.startswith(f"Host {hostname}"):
+                        in_host_block = True
+                        new_lines.append(line)
+                    elif line.startswith("Host ") and in_host_block:
+                        # End of our host block
+                        if not identity_added:
+                            new_lines.append(identity_line)
+                            identity_added = True
+                        in_host_block = False
+                        new_lines.append(line)
+                    elif in_host_block and line.strip().startswith("IdentityFile"):
+                        # Replace existing IdentityFile
+                        new_lines.append(identity_line)
+                        identity_added = True
+                    else:
+                        new_lines.append(line)
+
+                # If we didn't add identity (host block was at end), add it now
+                if in_host_block and not identity_added:
+                    new_lines.append(identity_line)
+
+                updated_config = '\n'.join(new_lines)
+            else:
+                # Add new host entry
+                new_entry = f"""
+# KVM Host {kvm_host_id} - Database SSH Key
+Host {hostname}
+    IdentityFile ~/.ssh/{key_filename}
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/.ssh/known_hosts
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    ConnectTimeout 30
+"""
+                updated_config = existing_config + new_entry
+
+            # Write updated config
+            with open(ssh_config_path, 'w') as f:
+                f.write(updated_config)
+
+            os.chmod(ssh_config_path, 0o600)
+
+            logger.info(f"Updated SSH config for host {hostname} to use database key")
+
+            # Update last_used timestamp
+            from datetime import datetime
+            ssh_key.last_used = datetime.utcnow()
+            await db.commit()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to setup SSH key for KVM host {kvm_host_id}: {e}")
+            raise
 
     def _get_connection(self, uri: str) -> libvirt.virConnect:
         """Get or create libvirt connection."""
