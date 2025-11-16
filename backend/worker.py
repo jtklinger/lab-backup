@@ -124,17 +124,30 @@ async def _execute_backup_async(schedule_id: Optional[int], backup_id: int):
                 if not schedule:
                     raise Exception("Schedule not found")
 
-            # Create job record
-            job_metadata = {"schedule_id": schedule_id} if schedule_id else {"one_time": True}
-            job = Job(
-                type=JobType.BACKUP,
-                status=JobStatus.RUNNING,
-                backup_id=backup_id,
-                started_at=datetime.utcnow(),
-                celery_task_id=celery_app.current_task.request.id,
-                job_metadata=job_metadata
+            # Find existing PENDING job created by API endpoint
+            stmt = select(Job).where(
+                Job.celery_task_id == celery_app.current_task.request.id
             )
-            db.add(job)
+            result = await db.execute(stmt)
+            job = result.scalar_one_or_none()
+
+            if not job:
+                # If no job exists (shouldn't happen), create one
+                job_metadata = {"schedule_id": schedule_id} if schedule_id else {"one_time": True}
+                job = Job(
+                    type=JobType.BACKUP,
+                    status=JobStatus.RUNNING,
+                    backup_id=backup_id,
+                    started_at=datetime.utcnow(),
+                    celery_task_id=celery_app.current_task.request.id,
+                    job_metadata=job_metadata
+                )
+                db.add(job)
+            else:
+                # Update existing job to RUNNING
+                job.status = JobStatus.RUNNING
+                job.started_at = datetime.utcnow()
+
             await db.commit()
 
             # Set logging context for this job (wraps all operations with job_id and backup_id)
@@ -533,20 +546,33 @@ async def _execute_restore_async(backup_id: int, target_host_id: Optional[int], 
             if backup.status != BackupStatus.COMPLETED:
                 raise Exception(f"Cannot restore backup with status: {backup.status}")
 
-            # Create job record
-            job = Job(
-                type=JobType.RESTORE,
-                status=JobStatus.RUNNING,
-                backup_id=backup_id,
-                started_at=datetime.utcnow(),
-                celery_task_id=celery_app.current_task.request.id,
-                job_metadata={
-                    "target_host_id": target_host_id,
-                    "new_name": new_name,
-                    "overwrite": overwrite
-                }
+            # Find existing PENDING job created by API endpoint
+            stmt = select(Job).where(
+                Job.celery_task_id == celery_app.current_task.request.id
             )
-            db.add(job)
+            result = await db.execute(stmt)
+            job = result.scalar_one_or_none()
+
+            if not job:
+                # If no job exists (shouldn't happen), create one
+                job = Job(
+                    type=JobType.RESTORE,
+                    status=JobStatus.RUNNING,
+                    backup_id=backup_id,
+                    started_at=datetime.utcnow(),
+                    celery_task_id=celery_app.current_task.request.id,
+                    job_metadata={
+                        "target_host_id": target_host_id,
+                        "new_name": new_name,
+                        "overwrite": overwrite
+                    }
+                )
+                db.add(job)
+            else:
+                # Update existing job to RUNNING
+                job.status = JobStatus.RUNNING
+                job.started_at = datetime.utcnow()
+
             await db.commit()
 
             # Set logging context for this restore job
