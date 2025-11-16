@@ -11,6 +11,7 @@ from celery.schedules import crontab
 from sqlalchemy import select
 
 from backend.core.config import settings
+from backend.core.logging_handler import LoggingContext
 from backend.models.base import AsyncSessionLocal
 from backend.models.backup import (
     Backup,
@@ -136,84 +137,88 @@ async def _execute_backup_async(schedule_id: Optional[int], backup_id: int):
             db.add(job)
             await db.commit()
 
-            # Update backup status
-            backup.status = BackupStatus.RUNNING
-            backup.started_at = datetime.utcnow()
-            await db.commit()
+            # Set logging context for this job (wraps all operations with job_id and backup_id)
+            with LoggingContext(job_id=job.id, backup_id=backup_id):
+                # Update backup status
+                backup.status = BackupStatus.RUNNING
+                backup.started_at = datetime.utcnow()
+                await db.commit()
 
-            # Log start
-            backup_type_str = f"{backup.backup_mode.value} backup" if hasattr(backup, 'backup_mode') else "backup"
-            log = JobLog(
-                job_id=job.id,
-                level="INFO",
-                message=f"Starting {backup_type_str} of {backup.source_type} {backup.source_name}"
-            )
-            db.add(log)
-            await db.commit()
-
-            # Execute backup based on source type
-            if backup.source_type == SourceType.VM:
-                result = await _backup_vm(db, schedule, backup, job)
-            elif backup.source_type == SourceType.CONTAINER:
-                result = await _backup_container(db, schedule, backup, job)
-            else:
-                raise Exception(f"Unknown source type: {backup.source_type}")
-
-            # Update backup with results
-            backup.status = BackupStatus.COMPLETED
-            backup.completed_at = datetime.utcnow()
-            backup.size = result.get("original_size", 0)
-            backup.compressed_size = result.get("compressed_size", 0)
-            backup.storage_path = result.get("storage_path")
-            backup.checksum = result.get("checksum")
-
-            # Update job
-            job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.utcnow()
-
-            # Log completion
-            log = JobLog(
-                job_id=job.id,
-                level="INFO",
-                message=f"Backup completed successfully. Size: {backup.compressed_size} bytes"
-            )
-            db.add(log)
-
-            await db.commit()
-
-            return {
-                "success": True,
-                "backup_id": backup_id,
-                "size": backup.compressed_size
-            }
-
-        except Exception as e:
-            # Update backup status
-            if backup:
-                backup.status = BackupStatus.FAILED
-                backup.error_message = str(e)
-                backup.completed_at = datetime.utcnow()
-
-            # Update job
-            if job:
-                job.status = JobStatus.FAILED
-                job.error_message = str(e)
-                job.completed_at = datetime.utcnow()
-
-                # Log error
+                # Log start
+                backup_type_str = f"{backup.backup_mode.value} backup" if hasattr(backup, 'backup_mode') else "backup"
                 log = JobLog(
                     job_id=job.id,
-                    level="ERROR",
-                    message=f"Backup failed: {str(e)}"
+                    level="INFO",
+                    message=f"Starting {backup_type_str} of {backup.source_type} {backup.source_name}"
+                )
+                db.add(log)
+                await db.commit()
+
+                # Execute backup based on source type
+                if backup.source_type == SourceType.VM:
+                    result = await _backup_vm(db, schedule, backup, job)
+                elif backup.source_type == SourceType.CONTAINER:
+                    result = await _backup_container(db, schedule, backup, job)
+                else:
+                    raise Exception(f"Unknown source type: {backup.source_type}")
+
+                # Update backup with results
+                backup.status = BackupStatus.COMPLETED
+                backup.completed_at = datetime.utcnow()
+                backup.size = result.get("original_size", 0)
+                backup.compressed_size = result.get("compressed_size", 0)
+                backup.storage_path = result.get("storage_path")
+                backup.checksum = result.get("checksum")
+
+                # Update job
+                job.status = JobStatus.COMPLETED
+                job.completed_at = datetime.utcnow()
+
+                # Log completion
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Backup completed successfully. Size: {backup.compressed_size} bytes"
                 )
                 db.add(log)
 
-            await db.commit()
+                await db.commit()
 
-            return {
-                "success": False,
-                "error": str(e)
-            }
+                return {
+                    "success": True,
+                    "backup_id": backup_id,
+                    "size": backup.compressed_size
+                }
+
+        except Exception as e:
+            # Set logging context for error handling
+            with LoggingContext(job_id=job.id if job else None, backup_id=backup_id):
+                # Update backup status
+                if backup:
+                    backup.status = BackupStatus.FAILED
+                    backup.error_message = str(e)
+                    backup.completed_at = datetime.utcnow()
+
+                # Update job
+                if job:
+                    job.status = JobStatus.FAILED
+                    job.error_message = str(e)
+                    job.completed_at = datetime.utcnow()
+
+                    # Log error
+                    log = JobLog(
+                        job_id=job.id,
+                        level="ERROR",
+                        message=f"Backup failed: {str(e)}"
+                    )
+                    db.add(log)
+
+                await db.commit()
+
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
         finally:
             # Dispose engine to clean up connections
             await engine.dispose()
@@ -544,64 +549,68 @@ async def _execute_restore_async(backup_id: int, target_host_id: Optional[int], 
             db.add(job)
             await db.commit()
 
-            # Log start
-            log = JobLog(
-                job_id=job.id,
-                level="INFO",
-                message=f"Starting restore of {backup.source_type} {backup.source_name}"
-            )
-            db.add(log)
-            await db.commit()
-
-            # Execute restore based on source type
-            if backup.source_type == SourceType.VM:
-                result = await _restore_vm(db, backup, job, target_host_id, new_name, overwrite, storage_type, storage_config)
-            elif backup.source_type == SourceType.CONTAINER:
-                raise Exception("Container restore not yet implemented")
-            else:
-                raise Exception(f"Unknown source type: {backup.source_type}")
-
-            # Update job
-            job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.utcnow()
-
-            # Log completion
-            log = JobLog(
-                job_id=job.id,
-                level="INFO",
-                message=f"Restore completed successfully. Restored as: {result.get('vm_name', result.get('container_name', 'unknown'))}"
-            )
-            db.add(log)
-
-            await db.commit()
-
-            return {
-                "success": True,
-                "backup_id": backup_id,
-                "result": result
-            }
-
-        except Exception as e:
-            # Update job
-            if job:
-                job.status = JobStatus.FAILED
-                job.error_message = str(e)
-                job.completed_at = datetime.utcnow()
-
-                # Log error
+            # Set logging context for this restore job
+            with LoggingContext(job_id=job.id, backup_id=backup_id):
+                # Log start
                 log = JobLog(
                     job_id=job.id,
-                    level="ERROR",
-                    message=f"Restore failed: {str(e)}"
+                    level="INFO",
+                    message=f"Starting restore of {backup.source_type} {backup.source_name}"
+                )
+                db.add(log)
+                await db.commit()
+
+                # Execute restore based on source type
+                if backup.source_type == SourceType.VM:
+                    result = await _restore_vm(db, backup, job, target_host_id, new_name, overwrite, storage_type, storage_config)
+                elif backup.source_type == SourceType.CONTAINER:
+                    raise Exception("Container restore not yet implemented")
+                else:
+                    raise Exception(f"Unknown source type: {backup.source_type}")
+
+                # Update job
+                job.status = JobStatus.COMPLETED
+                job.completed_at = datetime.utcnow()
+
+                # Log completion
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Restore completed successfully. Restored as: {result.get('vm_name', result.get('container_name', 'unknown'))}"
                 )
                 db.add(log)
 
-            await db.commit()
+                await db.commit()
 
-            return {
-                "success": False,
-                "error": str(e)
-            }
+                return {
+                    "success": True,
+                    "backup_id": backup_id,
+                    "result": result
+                }
+
+        except Exception as e:
+            # Set logging context for error handling
+            with LoggingContext(job_id=job.id if job else None, backup_id=backup_id):
+                # Update job
+                if job:
+                    job.status = JobStatus.FAILED
+                    job.error_message = str(e)
+                    job.completed_at = datetime.utcnow()
+
+                    # Log error
+                    log = JobLog(
+                        job_id=job.id,
+                        level="ERROR",
+                        message=f"Restore failed: {str(e)}"
+                    )
+                    db.add(log)
+
+                await db.commit()
+
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
         finally:
             # Dispose engine to clean up connections
             await engine.dispose()

@@ -11,6 +11,44 @@ from typing import List, Dict, Any, Optional
 from queue import Queue
 from logging.handlers import RotatingFileHandler as BaseRotatingFileHandler
 from pathlib import Path
+from contextvars import ContextVar
+
+# Context variables for logging
+_log_context: ContextVar[Dict[str, Any]] = ContextVar('log_context', default={})
+
+
+class LoggingContext:
+    """
+    Context manager for adding metadata to log records.
+
+    Usage:
+        with LoggingContext(job_id=123, backup_id=456):
+            logger.info("This log will have job_id and backup_id")
+    """
+
+    def __init__(self, **context):
+        self.context = context
+        self.token = None
+
+    def __enter__(self):
+        # Merge with existing context
+        current = _log_context.get()
+        new_context = {**current, **self.context}
+        self.token = _log_context.set(new_context)
+        return self
+
+    def __exit__(self, *args):
+        if self.token:
+            _log_context.reset(self.token)
+
+
+class ContextFilter(logging.Filter):
+    """Filter that adds context variables to log records."""
+
+    def filter(self, record):
+        context = _log_context.get()
+        record.context = context
+        return True
 
 
 class InMemoryLogHandler(logging.Handler):
@@ -347,6 +385,7 @@ def setup_database_logging():
     """Setup database logging handler (can be called independently of in-memory logging)."""
     try:
         db_handler = get_db_log_handler()
+        context_filter = ContextFilter()
 
         # Only attach to backend logger to avoid SSL issues
         loggers_configured = []
@@ -357,6 +396,9 @@ def setup_database_logging():
                 if logger.level == logging.NOTSET:
                     logger.setLevel(logging.INFO)
                 loggers_configured.append(logger_name)
+            # Add context filter if not already added
+            if context_filter not in logger.filters:
+                logger.addFilter(context_filter)
 
         print(f"✅ Database logging handler attached to: {', '.join(loggers_configured) if loggers_configured else 'none (already configured)'}", flush=True)
         return True
