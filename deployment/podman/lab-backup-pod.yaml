@@ -91,7 +91,7 @@ spec:
     # API Server
     - name: api
       image: localhost/lab-backup:latest
-      command: ["/app/docker/start-api.sh"]
+      command: ["/app/start-api.sh"]
       env:
         - name: DATABASE_URL
           value: "postgresql+asyncpg://labbackup:changeme@127.0.0.1:5432/lab_backup"
