@@ -1,0 +1,216 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lab-backup
+  labels:
+    app: lab-backup
+    version: "1.0.0"
+spec:
+  restartPolicy: Always
+
+  # Volumes for persistent data
+  volumes:
+    - name: backup-data
+      hostPath:
+        path: /srv/backups
+        type: DirectoryOrCreate
+
+    - name: ssl-certs
+      hostPath:
+        path: /opt/backup-deployment/certs
+        type: DirectoryOrCreate
+
+    - name: log-files
+      hostPath:
+        path: /opt/backup-deployment/logs
+        type: DirectoryOrCreate
+
+    - name: postgres-data
+      hostPath:
+        path: /opt/backup-deployment/data/postgres
+        type: DirectoryOrCreate
+
+    - name: redis-data
+      hostPath:
+        path: /opt/backup-deployment/data/redis
+        type: DirectoryOrCreate
+
+    - name: app-code
+      hostPath:
+        path: /opt/backup-deployment
+        type: Directory
+
+    - name: podman-socket
+      hostPath:
+        path: /run/podman
+        type: Directory
+
+  containers:
+    # PostgreSQL Database
+    - name: postgres
+      image: docker.io/library/postgres:16-alpine
+      env:
+        - name: POSTGRES_DB
+          value: "lab_backup"
+        - name: POSTGRES_USER
+          value: "labbackup"
+        - name: POSTGRES_PASSWORD
+          value: "changeme"
+      ports:
+        - containerPort: 5432
+          protocol: TCP
+      volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+      resources:
+        requests:
+          memory: "256Mi"
+          cpu: "250m"
+        limits:
+          memory: "512Mi"
+          cpu: "500m"
+
+    # Redis Cache/Message Broker
+    - name: redis
+      image: docker.io/library/redis:7-alpine
+      command: ["redis-server", "--appendonly", "yes"]
+      ports:
+        - containerPort: 6379
+          protocol: TCP
+      volumeMounts:
+        - name: redis-data
+          mountPath: /data
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "250m"
+
+    # API Server
+    - name: api
+      image: localhost/lab-backup:latest
+      command: ["/app/docker/start-api.sh"]
+      env:
+        - name: DATABASE_URL
+          value: "postgresql+asyncpg://labbackup:changeme@127.0.0.1:5432/lab_backup"
+        - name: REDIS_URL
+          value: "redis://127.0.0.1:6379/0"
+        - name: CELERY_BROKER_URL
+          value: "redis://127.0.0.1:6379/1"
+        - name: DEBUG
+          value: "false"
+        - name: SECRET_KEY
+          value: "REPLACE_WITH_STRONG_SECRET_KEY"
+        - name: ENABLE_SSL
+          value: "true"
+        - name: SSL_CERT_PATH
+          value: "/app/certs/server.crt"
+        - name: SSL_KEY_PATH
+          value: "/app/certs/server.key"
+        - name: SSL_HOSTNAME
+          value: "backup01.lab.towerbancorp.com"
+        - name: RUN_MIGRATIONS
+          value: "true"
+        - name: LOG_LEVEL
+          value: "info"
+      ports:
+        - containerPort: 8443
+          hostPort: 8443
+          protocol: TCP
+      volumeMounts:
+        - name: backup-data
+          mountPath: /backups
+        - name: ssl-certs
+          mountPath: /app/certs
+        - name: log-files
+          mountPath: /var/log/lab-backup
+        - name: podman-socket
+          mountPath: /var/run/podman
+      resources:
+        requests:
+          memory: "512Mi"
+          cpu: "500m"
+        limits:
+          memory: "1Gi"
+          cpu: "1000m"
+      securityContext:
+        capabilities:
+          add:
+            - NET_ADMIN
+
+    # Celery Worker
+    - name: celery-worker
+      image: localhost/lab-backup:latest
+      command: ["celery", "-A", "backend.worker", "worker", "--loglevel=info", "--concurrency=4"]
+      env:
+        - name: DATABASE_URL
+          value: "postgresql+asyncpg://labbackup:changeme@127.0.0.1:5432/lab_backup"
+        - name: REDIS_URL
+          value: "redis://127.0.0.1:6379/0"
+        - name: CELERY_BROKER_URL
+          value: "redis://127.0.0.1:6379/1"
+        - name: DEBUG
+          value: "false"
+        - name: SECRET_KEY
+          value: "REPLACE_WITH_STRONG_SECRET_KEY"
+      volumeMounts:
+        - name: backup-data
+          mountPath: /backups
+        - name: log-files
+          mountPath: /var/log/lab-backup
+        - name: podman-socket
+          mountPath: /var/run/podman
+      resources:
+        requests:
+          memory: "512Mi"
+          cpu: "500m"
+        limits:
+          memory: "2Gi"
+          cpu: "2000m"
+
+    # Celery Beat (Scheduler)
+    - name: celery-beat
+      image: localhost/lab-backup:latest
+      command: ["celery", "-A", "backend.worker", "beat", "--loglevel=info"]
+      env:
+        - name: DATABASE_URL
+          value: "postgresql+asyncpg://labbackup:changeme@127.0.0.1:5432/lab_backup"
+        - name: REDIS_URL
+          value: "redis://127.0.0.1:6379/0"
+        - name: CELERY_BROKER_URL
+          value: "redis://127.0.0.1:6379/1"
+        - name: DEBUG
+          value: "false"
+        - name: SECRET_KEY
+          value: "REPLACE_WITH_STRONG_SECRET_KEY"
+      volumeMounts:
+        - name: log-files
+          mountPath: /var/log/lab-backup
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "250m"
+
+    # Flower (Celery Monitoring - Optional)
+    - name: flower
+      image: localhost/lab-backup:latest
+      command: ["celery", "-A", "backend.worker", "flower", "--port=5555"]
+      env:
+        - name: CELERY_BROKER_URL
+          value: "redis://127.0.0.1:6379/1"
+      ports:
+        - containerPort: 5555
+          hostPort: 5555
+          protocol: TCP
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "256Mi"
+          cpu: "250m"

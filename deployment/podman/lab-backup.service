@@ -1,0 +1,43 @@
+[Unit]
+Description=Lab Backup System Pod
+Documentation=https://github.com/jtklinger/lab-backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+# Working directory
+WorkingDirectory=/opt/backup-deployment
+
+# Run as root (required for podman pod operations)
+User=root
+Group=root
+
+# Environment
+Environment=PODMAN_SYSTEMD_UNIT=%n
+
+# Start the pod from YAML
+ExecStartPre=/usr/bin/podman pod exists lab-backup || true
+ExecStart=/usr/bin/podman play kube /opt/backup-deployment/deployment/podman/lab-backup-pod.yaml
+ExecStop=/usr/bin/podman pod stop -t 30 lab-backup
+ExecStopPost=/usr/bin/podman pod rm -f lab-backup
+
+# Security
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/backup-deployment /srv/backups /run/podman
+
+# Logging
+SyslogIdentifier=lab-backup
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
