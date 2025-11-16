@@ -2,12 +2,49 @@
  * Dashboard View
  */
 
+// Auto-refresh state
+let dashboardAutoRefreshInterval = null;
+
 async function renderDashboard() {
     const mainContent = document.getElementById('mainContent');
     const headerActions = document.getElementById('headerActions');
 
-    // Clear header actions
-    headerActions.innerHTML = '';
+    // Get auto-refresh settings from localStorage
+    const autoRefreshEnabled = localStorage.getItem('dashboard_auto_refresh') === 'true';
+    const refreshInterval = parseInt(localStorage.getItem('dashboard_refresh_interval')) || 60;
+
+    // Add refresh controls to header
+    headerActions.innerHTML = `
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <button class="btn btn-secondary btn-sm" onclick="loadDashboardData()" title="Refresh dashboard">
+                🔄 Refresh
+            </button>
+            <label style="display: flex; align-items: center; gap: 0.5rem; margin: 0; font-size: 0.875rem;">
+                <input type="checkbox" id="autoRefreshToggle" ${autoRefreshEnabled ? 'checked' : ''}
+                    onchange="toggleDashboardAutoRefresh()" style="margin: 0;">
+                <span>Auto-refresh</span>
+            </label>
+            <select id="refreshIntervalSelect" class="form-control" style="width: auto; padding: 0.25rem 0.5rem; font-size: 0.875rem;"
+                onchange="updateDashboardRefreshInterval()" ${!autoRefreshEnabled ? 'disabled' : ''}>
+                <option value="30" ${refreshInterval === 30 ? 'selected' : ''}>30s</option>
+                <option value="60" ${refreshInterval === 60 ? 'selected' : ''}>60s</option>
+                <option value="120" ${refreshInterval === 120 ? 'selected' : ''}>2m</option>
+                <option value="300" ${refreshInterval === 300 ? 'selected' : ''}>5m</option>
+            </select>
+        </div>
+    `;
+
+    // Initialize auto-refresh if enabled
+    if (autoRefreshEnabled) {
+        startDashboardAutoRefresh(refreshInterval);
+    }
+
+    // Load dashboard data
+    await loadDashboardData();
+}
+
+async function loadDashboardData() {
+    const mainContent = document.getElementById('mainContent');
 
     // Show loading
     mainContent.innerHTML = '<div class="spinner"></div>';
@@ -303,3 +340,71 @@ function calculateDuration(startedAt, completedAt) {
     if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
     return `${seconds}s`;
 }
+
+// Auto-refresh control functions
+function toggleDashboardAutoRefresh() {
+    const toggle = document.getElementById('autoRefreshToggle');
+    const intervalSelect = document.getElementById('refreshIntervalSelect');
+    const enabled = toggle.checked;
+
+    // Save to localStorage
+    localStorage.setItem('dashboard_auto_refresh', enabled);
+
+    // Enable/disable interval selector
+    intervalSelect.disabled = !enabled;
+
+    if (enabled) {
+        const interval = parseInt(intervalSelect.value);
+        startDashboardAutoRefresh(interval);
+        notify.success(`Auto-refresh enabled (every ${formatInterval(interval)})`);
+    } else {
+        stopDashboardAutoRefresh();
+        notify.info('Auto-refresh disabled');
+    }
+}
+
+function updateDashboardRefreshInterval() {
+    const intervalSelect = document.getElementById('refreshIntervalSelect');
+    const interval = parseInt(intervalSelect.value);
+
+    // Save to localStorage
+    localStorage.setItem('dashboard_refresh_interval', interval);
+
+    // Restart auto-refresh with new interval
+    const toggle = document.getElementById('autoRefreshToggle');
+    if (toggle.checked) {
+        startDashboardAutoRefresh(interval);
+        notify.success(`Refresh interval updated to ${formatInterval(interval)}`);
+    }
+}
+
+function startDashboardAutoRefresh(intervalSeconds) {
+    // Clear existing interval
+    stopDashboardAutoRefresh();
+
+    // Set new interval
+    dashboardAutoRefreshInterval = setInterval(() => {
+        console.log('Auto-refreshing dashboard...');
+        loadDashboardData();
+    }, intervalSeconds * 1000);
+}
+
+function stopDashboardAutoRefresh() {
+    if (dashboardAutoRefreshInterval) {
+        clearInterval(dashboardAutoRefreshInterval);
+        dashboardAutoRefreshInterval = null;
+    }
+}
+
+function formatInterval(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}m`;
+}
+
+// Clean up auto-refresh when navigating away from dashboard
+window.addEventListener('hashchange', () => {
+    if (!window.location.hash.includes('dashboard')) {
+        stopDashboardAutoRefresh();
+    }
+});
