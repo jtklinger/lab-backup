@@ -139,17 +139,90 @@ function renderJobsList(jobs) {
 
 async function viewJobLogs(jobId) {
     try {
-        const logs = await api.getJobLogs(jobId);
+        // Fetch both job logs and application logs for this job
+        const [jobLogs, appLogsResponse] = await Promise.all([
+            api.getJobLogs(jobId),
+            api.getApplicationLogs({ job_id: jobId, limit: 500 })
+        ]);
+
+        const appLogs = appLogsResponse.logs || [];
 
         const modal = new Modal('Job Logs', `
-            <div style="background: #1e1e1e; color: #d4d4d4; padding: 1rem; border-radius: 0.375rem; font-family: monospace; font-size: 0.875rem; max-height: 400px; overflow-y: auto;">
-                ${logs.length === 0 ? '<div>No logs available</div>' : logs.map(log => `
-                    <div style="margin-bottom: 0.5rem;">
-                        <span style="color: #888;">[${formatDate(log.timestamp)}]</span>
-                        <span style="color: ${log.level === 'ERROR' ? '#f44' : log.level === 'WARNING' ? '#fa0' : '#4f4'};">${log.level}</span>
-                        <span>${log.message}</span>
-                    </div>
-                `).join('')}
+            <style>
+                .log-tabs {
+                    display: flex;
+                    gap: 0.5rem;
+                    margin-bottom: 1rem;
+                    border-bottom: 2px solid #333;
+                }
+                .log-tab {
+                    padding: 0.5rem 1rem;
+                    background: transparent;
+                    border: none;
+                    color: #888;
+                    cursor: pointer;
+                    font-size: 0.9rem;
+                    border-bottom: 2px solid transparent;
+                    margin-bottom: -2px;
+                }
+                .log-tab.active {
+                    color: #4a9eff;
+                    border-bottom-color: #4a9eff;
+                }
+                .log-tab:hover {
+                    color: #d4d4d4;
+                }
+                .log-content {
+                    display: none;
+                }
+                .log-content.active {
+                    display: block;
+                }
+                .log-terminal {
+                    background: #1e1e1e;
+                    color: #d4d4d4;
+                    padding: 1rem;
+                    border-radius: 0.375rem;
+                    font-family: monospace;
+                    font-size: 0.875rem;
+                    max-height: 400px;
+                    overflow-y: auto;
+                }
+            </style>
+
+            <div class="log-tabs">
+                <button class="log-tab active" onclick="switchLogTab(event, 'job-logs')">
+                    Job Logs (${jobLogs.length})
+                </button>
+                <button class="log-tab" onclick="switchLogTab(event, 'app-logs')">
+                    System Logs (${appLogs.length})
+                </button>
+            </div>
+
+            <div id="job-logs" class="log-content active">
+                <div class="log-terminal">
+                    ${jobLogs.length === 0 ? '<div>No job logs available</div>' : jobLogs.map(log => `
+                        <div style="margin-bottom: 0.5rem;">
+                            <span style="color: #888;">[${formatDate(log.timestamp)}]</span>
+                            <span style="color: ${log.level === 'ERROR' ? '#f44' : log.level === 'WARNING' ? '#fa0' : '#4f4'};">${log.level}</span>
+                            <span>${log.message}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+
+            <div id="app-logs" class="log-content">
+                <div class="log-terminal">
+                    ${appLogs.length === 0 ? '<div>No system logs available for this job</div>' : appLogs.map(log => `
+                        <div style="margin-bottom: 0.5rem;">
+                            <span style="color: #888;">[${formatDate(log.timestamp)}]</span>
+                            <span style="color: ${log.level === 'ERROR' ? '#f44' : log.level === 'WARNING' ? '#fa0' : log.level === 'CRITICAL' ? '#f00' : '#4f4'};">${log.level}</span>
+                            <span style="color: #66d9ef;">${log.logger}</span>
+                            <span>${log.message}</span>
+                            ${log.exception ? `<pre style="color: #f44; margin-left: 2rem; margin-top: 0.25rem;">${log.exception}</pre>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
             </div>
         `);
 
@@ -159,6 +232,18 @@ async function viewJobLogs(jobId) {
     } catch (error) {
         notify.error('Failed to load job logs: ' + error.message);
     }
+}
+
+// Tab switching function for log modal
+function switchLogTab(event, tabId) {
+    // Remove active class from all tabs and contents
+    const modal = event.target.closest('.modal-content');
+    modal.querySelectorAll('.log-tab').forEach(tab => tab.classList.remove('active'));
+    modal.querySelectorAll('.log-content').forEach(content => content.classList.remove('active'));
+
+    // Add active class to clicked tab and corresponding content
+    event.target.classList.add('active');
+    modal.querySelector(`#${tabId}`).classList.add('active');
 }
 
 async function cancelJob(jobId) {

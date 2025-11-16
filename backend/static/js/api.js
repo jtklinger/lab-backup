@@ -399,6 +399,16 @@ class APIClient {
     async clearLogs() {
         return this.request('/logs/clear', { method: 'POST' });
     }
+
+    // Application logs (database)
+    async getApplicationLogs(params = {}) {
+        const query = new URLSearchParams(params).toString();
+        return this.request(`/logs/application${query ? '?' + query : ''}`);
+    }
+
+    async getApplicationLogStats() {
+        return this.request('/logs/application/stats');
+    }
 }
 
 // Create global API instance

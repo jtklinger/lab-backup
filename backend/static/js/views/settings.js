@@ -105,6 +105,14 @@ function renderSettingField(setting) {
             constraints = 'min="1" max="60"';
         } else if (setting.key === 'session.warning_minutes') {
             constraints = 'min="1" max="30"';
+        } else if (setting.key === 'logging.retention_days') {
+            constraints = 'min="1" max="365"';
+        } else if (setting.key === 'logging.error_retention_days') {
+            constraints = 'min="1" max="365"';
+        } else if (setting.key === 'logging.file_max_size_mb') {
+            constraints = 'min="1" max="1000"';
+        } else if (setting.key === 'logging.file_backup_count') {
+            constraints = 'min="1" max="50"';
         }
 
         inputField = `
@@ -114,13 +122,27 @@ function renderSettingField(setting) {
         `;
     } else {
         // string type
-        inputField = `
-            <label class="form-label">${setting.description || setting.key}</label>
-            <input type="${isSecret ? 'password' : 'text'}" class="form-input"
-                   id="${inputId}" name="${setting.key}"
-                   value="${isSecret && value ? '********' : value}"
-                   ${isSecret && value ? 'placeholder="Leave blank to keep current value"' : ''}>
-        `;
+        // Special handling for log level
+        if (setting.key === 'logging.level') {
+            inputField = `
+                <label class="form-label">${setting.description || setting.key}</label>
+                <select class="form-input" id="${inputId}" name="${setting.key}">
+                    <option value="DEBUG" ${value === 'DEBUG' ? 'selected' : ''}>DEBUG</option>
+                    <option value="INFO" ${value === 'INFO' ? 'selected' : ''}>INFO</option>
+                    <option value="WARNING" ${value === 'WARNING' ? 'selected' : ''}>WARNING</option>
+                    <option value="ERROR" ${value === 'ERROR' ? 'selected' : ''}>ERROR</option>
+                    <option value="CRITICAL" ${value === 'CRITICAL' ? 'selected' : ''}>CRITICAL</option>
+                </select>
+            `;
+        } else {
+            inputField = `
+                <label class="form-label">${setting.description || setting.key}</label>
+                <input type="${isSecret ? 'password' : 'text'}" class="form-input"
+                       id="${inputId}" name="${setting.key}"
+                       value="${isSecret && value ? '********' : value}"
+                       ${isSecret && value ? 'placeholder="Leave blank to keep current value"' : ''}>
+            `;
+        }
     }
 
     return `

@@ -147,6 +147,9 @@ function renderBackupsList(backups) {
                                         <button class="btn btn-sm btn-secondary" onclick="viewBackupDetails(${backup.id})">
                                             View
                                         </button>
+                                        <button class="btn btn-sm btn-secondary" onclick="viewBackupLogs(${backup.id})">
+                                            📋 Logs
+                                        </button>
                                         ${backup.status === 'completed' ? `
                                             <button class="btn btn-sm btn-primary" onclick="restoreBackup(${backup.id})">
                                                 Restore
@@ -155,8 +158,7 @@ function renderBackupsList(backups) {
                                         <button class="btn btn-sm btn-danger" onclick="deleteBackupConfirm(${backup.id})">
                                             Delete
                                         </button>
-                                    </td>
-                                </tr>
+                                    </td>                                </tr>
                             `).join('')}
                         </tbody>
                     </table>
@@ -455,4 +457,126 @@ async function deleteBackupConfirm(backupId) {
             }
         }
     );
+}
+
+async function viewBackupLogs(backupId) {
+    try {
+        // Fetch backup details to get job_id
+        const backup = await api.getBackup(backupId);
+
+        // Fetch logs - job logs if available, and application logs for this backup
+        const promises = [];
+
+        if (backup.job_id) {
+            promises.push(api.getJobLogs(backup.job_id));
+        } else {
+            promises.push(Promise.resolve([]));
+        }
+
+        promises.push(api.getApplicationLogs({ backup_id: backupId, limit: 500 }));
+
+        const [jobLogs, appLogsResponse] = await Promise.all(promises);
+        const appLogs = appLogsResponse.logs || [];
+
+        const modal = new Modal('Backup Logs - ' + backup.source_name, `
+            <style>
+                .log-tabs {
+                    display: flex;
+                    gap: 0.5rem;
+                    margin-bottom: 1rem;
+                    border-bottom: 2px solid #333;
+                }
+                .log-tab {
+                    padding: 0.5rem 1rem;
+                    background: transparent;
+                    border: none;
+                    color: #888;
+                    cursor: pointer;
+                    font-size: 0.9rem;
+                    border-bottom: 2px solid transparent;
+                    margin-bottom: -2px;
+                }
+                .log-tab.active {
+                    color: #4a9eff;
+                    border-bottom-color: #4a9eff;
+                }
+                .log-tab:hover {
+                    color: #d4d4d4;
+                }
+                .log-content {
+                    display: none;
+                }
+                .log-content.active {
+                    display: block;
+                }
+                .log-terminal {
+                    background: #1e1e1e;
+                    color: #d4d4d4;
+                    padding: 1rem;
+                    border-radius: 0.375rem;
+                    font-family: monospace;
+                    font-size: 0.875rem;
+                    max-height: 400px;
+                    overflow-y: auto;
+                }
+            </style>
+
+            <div class="log-tabs">
+                ${backup.job_id ? `
+                    <button class="log-tab active" onclick="switchBackupLogTab(event, 'job-logs')">
+                        Job Logs (${jobLogs.length})
+                    </button>
+                ` : ''}
+                <button class="log-tab ${!backup.job_id ? 'active' : ''}" onclick="switchBackupLogTab(event, 'app-logs')">
+                    System Logs (${appLogs.length})
+                </button>
+            </div>
+
+            ${backup.job_id ? `
+                <div id="job-logs" class="log-content active">
+                    <div class="log-terminal">
+                        ${jobLogs.length === 0 ? '<div>No job logs available</div>' : jobLogs.map(log => `
+                            <div style="margin-bottom: 0.5rem;">
+                                <span style="color: #888;">[${formatDate(log.timestamp)}]</span>
+                                <span style="color: ${log.level === 'ERROR' ? '#f44' : log.level === 'WARNING' ? '#fa0' : '#4f4'};">${log.level}</span>
+                                <span>${log.message}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
+
+            <div id="app-logs" class="log-content ${!backup.job_id ? 'active' : ''}">
+                <div class="log-terminal">
+                    ${appLogs.length === 0 ? '<div>No system logs available for this backup</div>' : appLogs.map(log => `
+                        <div style="margin-bottom: 0.5rem;">
+                            <span style="color: #888;">[${formatDate(log.timestamp)}]</span>
+                            <span style="color: ${log.level === 'ERROR' ? '#f44' : log.level === 'WARNING' ? '#fa0' : log.level === 'CRITICAL' ? '#f00' : '#4f4'};">${log.level}</span>
+                            <span style="color: #66d9ef;">${log.logger}</span>
+                            <span>${log.message}</span>
+                            ${log.exception ? `<pre style="color: #f44; margin-left: 2rem; margin-top: 0.25rem;">${log.exception}</pre>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `);
+
+        modal.overlay.querySelector('.modal-footer').style.display = 'none';
+        modal.show();
+
+    } catch (error) {
+        notify.error('Failed to load backup logs: ' + error.message);
+    }
+}
+
+// Tab switching function for backup log modal
+function switchBackupLogTab(event, tabId) {
+    // Remove active class from all tabs and contents
+    const modal = event.target.closest('.modal-content');
+    modal.querySelectorAll('.log-tab').forEach(tab => tab.classList.remove('active'));
+    modal.querySelectorAll('.log-content').forEach(content => content.classList.remove('active'));
+
+    // Add active class to clicked tab and corresponding content
+    event.target.classList.add('active');
+    modal.querySelector(`#${tabId}`).classList.add('active');
 }

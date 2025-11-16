@@ -58,6 +58,10 @@ celery_app.conf.beat_schedule = {
         "task": "backend.worker.cleanup_expired_backups",
         "schedule": crontab(hour="3", minute="0"),  # Daily at 3 AM
     },
+    "cleanup-logs": {
+        "task": "backend.worker.cleanup_logs",
+        "schedule": crontab(hour="4", minute="0"),  # Daily at 4 AM
+    },
     "update-storage-usage": {
         "task": "backend.worker.update_storage_usage",
         "schedule": crontab(hour="*/6", minute="0"),  # Every 6 hours
@@ -909,3 +913,22 @@ async def _update_storage_usage_async():
         await db.commit()
 
         return {"backends_updated": len(backends)}
+
+
+@celery_app.task(name="backend.worker.cleanup_logs")
+def cleanup_logs():
+    """Clean up old logs based on retention policies."""
+    import asyncio
+    return asyncio.run(_cleanup_logs_async())
+
+
+async def _cleanup_logs_async():
+    """Async implementation of log cleanup."""
+    from backend.services.log_cleanup import run_log_cleanup
+
+    try:
+        stats = await run_log_cleanup()
+        return stats
+    except Exception as e:
+        print(f"Error during log cleanup: {e}")
+        return {"error": str(e)}
