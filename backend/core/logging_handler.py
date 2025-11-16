@@ -182,7 +182,7 @@ def setup_logging():
 class DatabaseLogHandler(logging.Handler):
     """
     Async log handler that writes logs to the database.
-    Uses a queue to avoid blocking the logging thread.
+    Uses a queue and dedicated connection pool to avoid blocking and concurrency issues.
     """
 
     def __init__(self, queue_size: int = 10000):
@@ -196,6 +196,8 @@ class DatabaseLogHandler(logging.Handler):
         self.queue = Queue(maxsize=queue_size)
         self.worker_thread = None
         self._stop_event = None
+        self._engine = None
+        self._sessionmaker = None
 
     def emit(self, record: logging.LogRecord):
         """
@@ -251,47 +253,67 @@ class DatabaseLogHandler(logging.Handler):
             self.worker_thread.join(timeout=5)
 
     def _process_queue(self):
-        """Process log records from queue and write to database."""
+        """Process log records from queue and write to database using dedicated connection pool."""
         # Import here to avoid circular imports
-        from backend.models.base import AsyncSessionLocal
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
         from backend.models.logs import ApplicationLog
+        from backend.core.config import settings
 
         async def write_logs():
-            while not self._stop_event.is_set():
-                try:
-                    # Get a batch of logs from queue (with timeout)
-                    logs_to_write = []
+            # Create a dedicated engine for logging (separate connection pool)
+            engine = create_async_engine(
+                str(settings.DATABASE_URL),  # Convert URL object to string
+                echo=False,
+                pool_size=2,  # Small pool just for logging
+                max_overflow=0,
+                pool_pre_ping=True,
+                pool_recycle=3600,
+            )
+            SessionLocal = async_sessionmaker(
+                engine,
+                expire_on_commit=False,
+                class_=AsyncSession
+            )
+
+            try:
+                while not self._stop_event.is_set():
                     try:
-                        # Get first log with timeout
-                        log_entry = self.queue.get(timeout=1)
-                        logs_to_write.append(log_entry)
+                        # Get a batch of logs from queue (with timeout)
+                        logs_to_write = []
+                        try:
+                            # Get first log with timeout
+                            log_entry = self.queue.get(timeout=1)
+                            logs_to_write.append(log_entry)
 
-                        # Try to get more logs (up to 100) without blocking
-                        while len(logs_to_write) < 100:
-                            try:
-                                log_entry = self.queue.get_nowait()
-                                logs_to_write.append(log_entry)
-                            except:
-                                break
-                    except:
-                        # Timeout or no logs, continue
-                        continue
+                            # Try to get more logs (up to 100) without blocking
+                            while len(logs_to_write) < 100:
+                                try:
+                                    log_entry = self.queue.get_nowait()
+                                    logs_to_write.append(log_entry)
+                                except:
+                                    break
+                        except:
+                            # Timeout or no logs, continue
+                            continue
 
-                    # Write batch to database
-                    if logs_to_write:
-                        async with AsyncSessionLocal() as db:
-                            try:
-                                for log_data in logs_to_write:
-                                    log_record = ApplicationLog(**log_data)
-                                    db.add(log_record)
-                                await db.commit()
-                            except Exception as e:
-                                await db.rollback()
-                                # Log to stderr (avoid infinite loop)
-                                print(f"Error writing logs to database: {e}", flush=True)
+                        # Write batch to database using dedicated session
+                        if logs_to_write:
+                            async with SessionLocal() as db:
+                                try:
+                                    for log_data in logs_to_write:
+                                        log_record = ApplicationLog(**log_data)
+                                        db.add(log_record)
+                                    await db.commit()
+                                except Exception as e:
+                                    await db.rollback()
+                                    # Log to stderr (avoid infinite loop)
+                                    print(f"Error writing logs to database: {e}", flush=True)
 
-                except Exception as e:
-                    print(f"Error in log processing loop: {e}", flush=True)
+                    except Exception as e:
+                        print(f"Error in log processing loop: {e}", flush=True)
+            finally:
+                # Cleanup: dispose of the dedicated engine
+                await engine.dispose()
 
         # Run async event loop in this thread
         try:

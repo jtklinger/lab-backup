@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
 
-    # Setup database logging (uses separate thread + queue, avoids SSL issues)
+    # Setup database logging (uses dedicated connection pool to avoid concurrency issues)
     try:
         setup_database_logging()
         print("📊 Database logging handler configured")
