@@ -10,7 +10,7 @@ from pathlib import Path
 import asyncio
 
 from backend.core.config import settings
-from backend.core.logging_handler import setup_logging
+from backend.core.logging_handler import setup_logging, setup_database_logging, setup_file_logging
 from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api
 
 # Lifespan context manager for startup/shutdown
@@ -19,15 +19,28 @@ async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
 
-    # TODO: In-memory logging disabled - ANY logging handler setup breaks SSL
-    # Even when done in lifespan (after socket bind), attaching handlers to
-    # backend/sqlalchemy/fastapi loggers causes SSL connections to hang
-    # This requires deeper investigation into Python logging + uvicorn SSL interaction
+    # Setup database logging (uses separate thread + queue, avoids SSL issues)
+    try:
+        setup_database_logging()
+        print("📊 Database logging handler configured")
+    except Exception as e:
+        print(f"⚠️  Failed to setup database logging: {e}")
+
+    # Setup file logging with rotation
+    try:
+        setup_file_logging()
+        print("📄 File logging handler configured")
+    except Exception as e:
+        print(f"⚠️  Failed to setup file logging: {e}")
+
+    # TODO: In-memory logging still disabled due to SSL issues
+    # Database logging works fine (separate thread) but in-memory logging
+    # causes SSL connections to hang when attached to fastapi/sqlalchemy loggers
     # try:
     #     setup_logging()
     #     print("📊 In-memory logging handler configured")
     # except Exception as e:
-    #     print(f"⚠️  Failed to setup logging: {e}")
+    #     print(f"⚠️  Failed to setup in-memory logging: {e}")
 
     yield
     # Shutdown
