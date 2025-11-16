@@ -1,7 +1,7 @@
 """
 Storage backend models.
 """
-from typing import Optional
+from typing import Optional, Dict, Any
 from sqlalchemy import String, Integer, Boolean, JSON, Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
@@ -24,11 +24,11 @@ class StorageBackend(Base):
 
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     type: Mapped[StorageType] = mapped_column(
-        SQLEnum(StorageType),
+        SQLEnum(StorageType, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         index=True
     )
-    config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    config: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     capacity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in GB
     used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in GB

@@ -27,6 +27,14 @@ Enterprise-grade web-based backup solution for KVM virtual machines and Podman c
 - ✅ **Task Scheduler** - Celery-based distributed task execution
 - ✅ **Metrics & Monitoring** - Prometheus-compatible metrics via Flower
 
+### Security & Authentication
+- ✅ **SSH Key Management** - Upload, generate, and manage SSH keys per KVM host via web UI
+- ✅ **Encrypted Key Storage** - Private keys encrypted at rest using Fernet (AES-128)
+- ✅ **Automatic Key Deployment** - System configures SSH client with database-stored keys
+- ✅ **Flexible Authentication** - Support for default SSH keys or database-managed keys
+- ✅ **SSL/TLS Support** - Self-signed or custom certificates for HTTPS
+- ✅ **Role-Based Access Control** - Admin, Operator, and Viewer roles
+
 ### Recovery & Restoration
 - ✅ **VM Recovery** - Restore to original or different KVM host
 - ✅ **Flexible Restore Options** - Overwrite existing or create new with different name
@@ -36,6 +44,17 @@ Enterprise-grade web-based backup solution for KVM virtual machines and Podman c
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system architecture, component design, and technology stack.
+
+## Documentation
+
+**Setup & Configuration:**
+- [SETUP-WINDOWS.md](SETUP-WINDOWS.md) - Windows 11 setup guide
+- [QUICK-REFERENCE.md](QUICK-REFERENCE.md) - Quick reference for common operations
+- [docs/SSL_TLS_CONFIGURATION.md](docs/SSL_TLS_CONFIGURATION.md) - SSL/TLS certificate setup
+
+**Feature Guides:**
+- [docs/SSH_KEY_MANAGEMENT.md](docs/SSH_KEY_MANAGEMENT.md) - SSH key management for KVM hosts
+- [docs/TIERED_STORAGE_ARCHITECTURE.md](docs/TIERED_STORAGE_ARCHITECTURE.md) - Tiered storage configuration
 
 ## Quick Start
 
@@ -417,10 +436,12 @@ If you're having trouble connecting to libvirt:
    usermod -a -G libvirt $(whoami)
    ```
 
-3. For remote connections, ensure SSH keys are set up
-   ```bash
-   ssh-copy-id user@kvm-host
-   ```
+3. For remote connections, configure SSH authentication using either:
+   - **Web UI** (recommended): Use the SSH Key Management feature - see [docs/SSH_KEY_MANAGEMENT.md](docs/SSH_KEY_MANAGEMENT.md)
+   - **Manual setup**: Copy SSH keys to the target host
+     ```bash
+     ssh-copy-id user@kvm-host
+     ```
 
 ### Podman Connection Issues
 

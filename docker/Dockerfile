@@ -41,12 +41,14 @@ COPY database /app/database
 COPY generate-env.py /app/
 COPY .env.minimal /app/
 COPY docker/entrypoint.sh /app/entrypoint.sh
+COPY docker/start-api.sh /app/start-api.sh
+COPY docker/healthcheck.py /app/healthcheck.py
 
 # Create necessary directories
-RUN mkdir -p /backups /var/log/lab-backup
+RUN mkdir -p /backups /var/log/lab-backup /app/certs
 
-# Make entrypoint executable
-RUN chmod +x /app/entrypoint.sh
+# Make scripts executable
+RUN chmod +x /app/entrypoint.sh /app/start-api.sh /app/healthcheck.py
 
 # Set Python path
 ENV PYTHONPATH=/app
@@ -55,12 +57,12 @@ ENV PYTHONPATH=/app
 RUN useradd -m labbackup && \
     chown -R labbackup:labbackup /app /backups /var/log/lab-backup
 
-# Expose port
-EXPOSE 8000
+# Expose ports
+EXPOSE 8000 8443
 
-# Health check
+# Health check (supports both HTTP and HTTPS)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
+    CMD python3 /app/healthcheck.py
 
 # Use entrypoint for initialization
 ENTRYPOINT ["/app/entrypoint.sh"]

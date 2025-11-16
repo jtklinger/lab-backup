@@ -7,15 +7,41 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse
 from contextlib import asynccontextmanager
 from pathlib import Path
+import asyncio
 
 from backend.core.config import settings
-from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, settings as settings_api
+from backend.core.logging_handler import setup_logging, setup_database_logging, setup_file_logging
+from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+
+    # Setup database logging (uses dedicated connection pool to avoid concurrency issues)
+    try:
+        setup_database_logging()
+        print("📊 Database logging handler configured")
+    except Exception as e:
+        print(f"⚠️  Failed to setup database logging: {e}")
+
+    # Setup file logging with rotation
+    try:
+        setup_file_logging()
+        print("📄 File logging handler configured")
+    except Exception as e:
+        print(f"⚠️  Failed to setup file logging: {e}")
+
+    # TODO: In-memory logging still disabled due to SSL issues
+    # Database logging works fine (separate thread) but in-memory logging
+    # causes SSL connections to hang when attached to fastapi/sqlalchemy loggers
+    # try:
+    #     setup_logging()
+    #     print("📊 In-memory logging handler configured")
+    # except Exception as e:
+    #     print(f"⚠️  Failed to setup in-memory logging: {e}")
+
     yield
     # Shutdown
     print("Shutting down...")
@@ -52,11 +78,12 @@ app.include_router(storage.router, prefix=f"{settings.API_V1_PREFIX}/storage", t
 app.include_router(schedules.router, prefix=f"{settings.API_V1_PREFIX}/schedules", tags=["Schedules"])
 app.include_router(backups.router, prefix=f"{settings.API_V1_PREFIX}/backups", tags=["Backups"])
 app.include_router(jobs.router, prefix=f"{settings.API_V1_PREFIX}/jobs", tags=["Jobs"])
+app.include_router(logs.router, prefix=f"{settings.API_V1_PREFIX}/logs", tags=["Logs"])
 
 
 @app.get("/")
 async def root():
-    """Root endpoint - redirects to setup or docs."""
+    """Root endpoint - redirects to setup or app."""
     from backend.models.base import AsyncSessionLocal
     from backend.models.user import User, UserRole
     from sqlalchemy import select
@@ -70,7 +97,7 @@ async def root():
     if not admin_exists:
         return RedirectResponse(url="/setup")
     else:
-        return RedirectResponse(url="/docs")
+        return RedirectResponse(url="/static/app.html")
 
 
 @app.get("/setup", response_class=HTMLResponse)
@@ -86,6 +113,30 @@ async def setup_page():
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/test-logging")
+async def test_logging():
+    """Test endpoint to verify logging is working."""
+    import logging
+    from backend.core.logging_handler import get_log_handler
+
+    # Generate some test log messages
+    logger = logging.getLogger("backend.test")
+    logger.info("Test INFO message")
+    logger.warning("Test WARNING message")
+    logger.error("Test ERROR message")
+
+    # Get log stats
+    handler = get_log_handler()
+    stats = handler.get_stats()
+    recent_logs = handler.get_logs(limit=10)
+
+    return {
+        "stats": stats,
+        "recent_logs": recent_logs,
+        "handler_in_root": handler in logging.getLogger().handlers
+    }
 
 
 if __name__ == "__main__":

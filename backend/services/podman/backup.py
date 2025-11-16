@@ -67,6 +67,10 @@ class PodmanBackupService:
         all_containers: bool = True
     ) -> List[Dict[str, Any]]:
         """List all containers on a Podman host."""
+        # For SSH URIs, use podman CLI over SSH instead of Python library
+        if uri.startswith("ssh://"):
+            return await self._list_containers_ssh(uri, all_containers)
+
         try:
             client = await self._run_in_executor(self._get_client, uri)
 
@@ -89,24 +93,72 @@ class PodmanBackupService:
             logger.error(f"Failed to list containers: {e}")
             raise
 
+    async def _list_containers_ssh(self, uri: str, all_containers: bool = True) -> List[Dict[str, Any]]:
+        """List containers on a Podman host via SSH using podman CLI."""
+        import subprocess
+
+        # Parse SSH URI: ssh://user@host
+        uri_parts = uri.replace("ssh://", "").split("@")
+        if len(uri_parts) != 2:
+            raise ValueError(f"Invalid SSH URI format: {uri}. Expected ssh://user@host")
+
+        user, host = uri_parts
+
+        try:
+            # Run podman ps command via SSH
+            cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                   f"{user}@{host}", "podman", "ps", "--all", "--format", "json"]
+
+            def _run_ssh():
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode != 0:
+                    raise Exception(f"SSH command failed: {result.stderr}")
+                return result.stdout
+
+            output = await self._run_in_executor(_run_ssh)
+            containers_json = json.loads(output) if output.strip() else []
+
+            # Convert to our format
+            result = []
+            for container in containers_json:
+                result.append({
+                    "id": container.get("Id", "")[:12],  # Short ID
+                    "name": container.get("Names", [""])[0] if isinstance(container.get("Names"), list) else container.get("Names", ""),
+                    "image": container.get("Image", ""),
+                    "state": container.get("State", ""),
+                    "created": container.get("Created", ""),
+                })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to list containers via SSH: {e}")
+            raise
+
     async def create_backup(
         self,
         uri: str,
         container_id: str,
         backup_dir: Path,
-        include_volumes: bool = True
+        include_volumes: bool = True,
+        incremental: bool = False
     ) -> Dict[str, Any]:
         """
         Create a backup of a container.
+
+        Note: Podman container backups are ALWAYS full exports. The `incremental`
+        parameter is accepted for API compatibility but is ignored. Podman's
+        container export functionality does not support incremental backups.
 
         Args:
             uri: Podman connection URI
             container_id: ID or name of the container
             backup_dir: Directory to store backup files
             include_volumes: Whether to backup volumes
+            incremental: Ignored - Podman always does full exports
 
         Returns:
-            Dictionary with backup information
+            Dictionary with backup information (includes 'incremental': False)
         """
         try:
             client = await self._run_in_executor(self._get_client, uri)
@@ -211,7 +263,8 @@ class PodmanBackupService:
                     "volumes_size": volumes_size,
                     "total_size": total_size,
                     "backup_dir": str(backup_dir),
-                    "checkpoint_created": checkpoint_created
+                    "checkpoint_created": checkpoint_created,
+                    "incremental": False  # Podman always does full exports
                 }
 
             return await self._run_in_executor(_backup)

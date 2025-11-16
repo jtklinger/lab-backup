@@ -13,6 +13,7 @@ from backend.models.backup import (
     SourceType,
     ScheduleType,
     BackupStatus,
+    BackupMode,
     JobType,
     JobStatus
 )
@@ -49,6 +50,7 @@ __all__ = [
     "SourceType",
     "ScheduleType",
     "BackupStatus",
+    "BackupMode",
     "JobType",
     "JobStatus",
     # Notifications

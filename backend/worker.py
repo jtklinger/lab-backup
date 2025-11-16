@@ -1,14 +1,17 @@
 """
 Celery worker configuration and tasks.
 """
+import asyncio
 import tempfile
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import select
 
 from backend.core.config import settings
+from backend.core.logging_handler import LoggingContext
 from backend.models.base import AsyncSessionLocal
 from backend.models.backup import (
     Backup,
@@ -56,6 +59,10 @@ celery_app.conf.beat_schedule = {
         "task": "backend.worker.cleanup_expired_backups",
         "schedule": crontab(hour="3", minute="0"),  # Daily at 3 AM
     },
+    "cleanup-logs": {
+        "task": "backend.worker.cleanup_logs",
+        "schedule": crontab(hour="4", minute="0"),  # Daily at 4 AM
+    },
     "update-storage-usage": {
         "task": "backend.worker.update_storage_usage",
         "schedule": crontab(hour="*/6", minute="0"),  # Every 6 hours
@@ -64,130 +71,184 @@ celery_app.conf.beat_schedule = {
 
 
 @celery_app.task(name="backend.worker.execute_backup")
-def execute_backup(schedule_id: int, backup_id: int):
+def execute_backup(schedule_id: Optional[int], backup_id: int):
     """
     Execute a backup job.
 
     Args:
-        schedule_id: ID of the backup schedule
+        schedule_id: ID of the backup schedule (None for one-time backups)
         backup_id: ID of the backup record
     """
-    import asyncio
-    return asyncio.run(_execute_backup_async(schedule_id, backup_id))
+    # Create a new event loop for this task
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        return loop.run_until_complete(_execute_backup_async(schedule_id, backup_id))
+    finally:
+        loop.close()
 
 
-async def _execute_backup_async(schedule_id: int, backup_id: int):
+async def _execute_backup_async(schedule_id: Optional[int], backup_id: int):
     """Async implementation of backup execution."""
-    async with AsyncSessionLocal() as db:
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    # Create a new async engine for this event loop
+    engine = create_async_engine(
+        str(settings.DATABASE_URL),
+        echo=settings.DB_ECHO,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+    )
+    SessionLocal = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+
+    async with SessionLocal() as db:
+        backup = None
+        job = None
         try:
-            # Get schedule and backup
-            schedule = await db.get(BackupSchedule, schedule_id)
+            # Get backup
             backup = await db.get(Backup, backup_id)
+            if not backup:
+                raise Exception("Backup not found")
 
-            if not schedule or not backup:
-                raise Exception("Schedule or backup not found")
+            # Get schedule if this is a scheduled backup
+            schedule = None
+            if schedule_id:
+                schedule = await db.get(BackupSchedule, schedule_id)
+                if not schedule:
+                    raise Exception("Schedule not found")
 
-            # Create job record
-            job = Job(
-                type=JobType.BACKUP,
-                status=JobStatus.RUNNING,
-                backup_id=backup_id,
-                started_at=datetime.utcnow(),
-                celery_task_id=celery_app.current_task.request.id,
-                metadata={"schedule_id": schedule_id}
+            # Find existing PENDING job created by API endpoint
+            stmt = select(Job).where(
+                Job.celery_task_id == celery_app.current_task.request.id
             )
-            db.add(job)
-            await db.commit()
+            result = await db.execute(stmt)
+            job = result.scalar_one_or_none()
 
-            # Update backup status
-            backup.status = BackupStatus.RUNNING
-            backup.started_at = datetime.utcnow()
-            await db.commit()
-
-            # Log start
-            log = JobLog(
-                job_id=job.id,
-                level="INFO",
-                message=f"Starting backup of {backup.source_type} {backup.source_name}"
-            )
-            db.add(log)
-            await db.commit()
-
-            # Execute backup based on source type
-            if schedule.source_type == SourceType.VM:
-                result = await _backup_vm(db, schedule, backup, job)
-            elif schedule.source_type == SourceType.CONTAINER:
-                result = await _backup_container(db, schedule, backup, job)
+            if not job:
+                # If no job exists (shouldn't happen), create one
+                job_metadata = {"schedule_id": schedule_id} if schedule_id else {"one_time": True}
+                job = Job(
+                    type=JobType.BACKUP,
+                    status=JobStatus.RUNNING,
+                    backup_id=backup_id,
+                    started_at=datetime.utcnow(),
+                    celery_task_id=celery_app.current_task.request.id,
+                    job_metadata=job_metadata
+                )
+                db.add(job)
             else:
-                raise Exception(f"Unknown source type: {schedule.source_type}")
-
-            # Update backup with results
-            backup.status = BackupStatus.COMPLETED
-            backup.completed_at = datetime.utcnow()
-            backup.size = result.get("original_size", 0)
-            backup.compressed_size = result.get("compressed_size", 0)
-            backup.storage_path = result.get("storage_path")
-            backup.checksum = result.get("checksum")
-
-            # Update job
-            job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.utcnow()
-
-            # Log completion
-            log = JobLog(
-                job_id=job.id,
-                level="INFO",
-                message=f"Backup completed successfully. Size: {backup.compressed_size} bytes"
-            )
-            db.add(log)
+                # Update existing job to RUNNING
+                job.status = JobStatus.RUNNING
+                job.started_at = datetime.utcnow()
 
             await db.commit()
 
-            return {
-                "success": True,
-                "backup_id": backup_id,
-                "size": backup.compressed_size
-            }
+            # Set logging context for this job (wraps all operations with job_id and backup_id)
+            with LoggingContext(job_id=job.id, backup_id=backup_id):
+                # Update backup status
+                backup.status = BackupStatus.RUNNING
+                backup.started_at = datetime.utcnow()
+                await db.commit()
 
-        except Exception as e:
-            # Update backup status
-            if backup:
-                backup.status = BackupStatus.FAILED
-                backup.error_message = str(e)
-                backup.completed_at = datetime.utcnow()
-
-            # Update job
-            if job:
-                job.status = JobStatus.FAILED
-                job.error_message = str(e)
-                job.completed_at = datetime.utcnow()
-
-                # Log error
+                # Log start
+                backup_type_str = f"{backup.backup_mode.value} backup" if hasattr(backup, 'backup_mode') else "backup"
                 log = JobLog(
                     job_id=job.id,
-                    level="ERROR",
-                    message=f"Backup failed: {str(e)}"
+                    level="INFO",
+                    message=f"Starting {backup_type_str} of {backup.source_type} {backup.source_name}"
+                )
+                db.add(log)
+                await db.commit()
+
+                # Execute backup based on source type
+                if backup.source_type == SourceType.VM:
+                    result = await _backup_vm(db, schedule, backup, job)
+                elif backup.source_type == SourceType.CONTAINER:
+                    result = await _backup_container(db, schedule, backup, job)
+                else:
+                    raise Exception(f"Unknown source type: {backup.source_type}")
+
+                # Update backup with results
+                backup.status = BackupStatus.COMPLETED
+                backup.completed_at = datetime.utcnow()
+                backup.size = result.get("original_size", 0)
+                backup.compressed_size = result.get("compressed_size", 0)
+                backup.storage_path = result.get("storage_path")
+                backup.checksum = result.get("checksum")
+
+                # Update job
+                job.status = JobStatus.COMPLETED
+                job.completed_at = datetime.utcnow()
+
+                # Log completion
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Backup completed successfully. Size: {backup.compressed_size} bytes"
                 )
                 db.add(log)
 
-            await db.commit()
+                await db.commit()
 
-            return {
-                "success": False,
-                "error": str(e)
-            }
+                return {
+                    "success": True,
+                    "backup_id": backup_id,
+                    "size": backup.compressed_size
+                }
+
+        except Exception as e:
+            # Set logging context for error handling
+            with LoggingContext(job_id=job.id if job else None, backup_id=backup_id):
+                # Update backup status
+                if backup:
+                    backup.status = BackupStatus.FAILED
+                    backup.error_message = str(e)
+                    backup.completed_at = datetime.utcnow()
+
+                # Update job
+                if job:
+                    job.status = JobStatus.FAILED
+                    job.error_message = str(e)
+                    job.completed_at = datetime.utcnow()
+
+                    # Log error
+                    log = JobLog(
+                        job_id=job.id,
+                        level="ERROR",
+                        message=f"Backup failed: {str(e)}"
+                    )
+                    db.add(log)
+
+                await db.commit()
+
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
+        finally:
+            # Dispose engine to clean up connections
+            await engine.dispose()
 
 
 async def _backup_vm(db, schedule, backup, job):
     """Execute VM backup."""
     from backend.models.infrastructure import VM, KVMHost
 
-    # Get VM and host
-    vm = await db.get(VM, schedule.source_id)
-    kvm_host = await db.get(KVMHost, vm.kvm_host_id)
+    # Get VM and host (use backup.source_id for both scheduled and one-time backups)
+    vm = await db.get(VM, backup.source_id)
+    if not vm:
+        raise Exception(f"VM with ID {backup.source_id} not found")
 
-    if not vm or not kvm_host:
-        raise Exception("VM or KVM host not found")
+    kvm_host = await db.get(KVMHost, vm.kvm_host_id)
+    if not kvm_host:
+        raise Exception(f"KVM host not found for VM {vm.name}")
 
     # Log
     log = JobLog(
@@ -204,10 +265,16 @@ async def _backup_vm(db, schedule, backup, job):
 
         # Execute backup
         kvm_service = KVMBackupService()
+
+        # Determine if incremental backup is requested
+        from backend.models.backup import BackupMode
+        is_incremental = hasattr(backup, 'backup_mode') and backup.backup_mode == BackupMode.INCREMENTAL
+
         backup_result = await kvm_service.create_backup(
             uri=kvm_host.uri,
             vm_uuid=vm.uuid,
-            backup_dir=backup_dir
+            backup_dir=backup_dir,
+            incremental=is_incremental
         )
 
         # Log
@@ -264,7 +331,7 @@ async def _backup_vm(db, schedule, backup, job):
 
         # Upload to storage
         from backend.models.storage import StorageBackend as StorageBackendModel
-        storage_backend_model = await db.get(StorageBackendModel, schedule.storage_backend_id)
+        storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
 
         if not storage_backend_model:
             raise Exception("Storage backend not found")
@@ -305,12 +372,14 @@ async def _backup_container(db, schedule, backup, job):
     """Execute container backup."""
     from backend.models.infrastructure import Container, PodmanHost
 
-    # Get container and host
-    container = await db.get(Container, schedule.source_id)
-    podman_host = await db.get(PodmanHost, container.podman_host_id)
+    # Get container and host (use backup.source_id for both scheduled and one-time backups)
+    container = await db.get(Container, backup.source_id)
+    if not container:
+        raise Exception(f"Container with ID {backup.source_id} not found")
 
-    if not container or not podman_host:
-        raise Exception("Container or Podman host not found")
+    podman_host = await db.get(PodmanHost, container.podman_host_id)
+    if not podman_host:
+        raise Exception(f"Podman host not found for container {container.name}")
 
     # Log
     log = JobLog(
@@ -387,7 +456,7 @@ async def _backup_container(db, schedule, backup, job):
 
         # Upload to storage
         from backend.models.storage import StorageBackend as StorageBackendModel
-        storage_backend_model = await db.get(StorageBackendModel, schedule.storage_backend_id)
+        storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
 
         if not storage_backend_model:
             raise Exception("Storage backend not found")
@@ -422,6 +491,306 @@ async def _backup_container(db, schedule, backup, job):
             "storage_path": storage_path,
             "checksum": upload_result.get("checksum")
         }
+
+
+@celery_app.task(name="backend.worker.execute_restore")
+def execute_restore(backup_id: int, target_host_id: Optional[int] = None, new_name: Optional[str] = None, overwrite: bool = False, storage_type: str = "auto", storage_config: Optional[dict] = None):
+    """
+    Execute a restore job.
+
+    Args:
+        backup_id: ID of the backup to restore
+        target_host_id: ID of the target host (None = original host)
+        new_name: New name for the restored VM/container (None = original name)
+        overwrite: Whether to overwrite existing VM/container
+        storage_type: Storage type: "auto" (detect from backup), "file", or "rbd"
+        storage_config: Optional storage-specific configuration override
+    """
+    # Create a new event loop for this task
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        return loop.run_until_complete(_execute_restore_async(backup_id, target_host_id, new_name, overwrite, storage_type, storage_config))
+    finally:
+        loop.close()
+
+
+async def _execute_restore_async(backup_id: int, target_host_id: Optional[int], new_name: Optional[str], overwrite: bool, storage_type: str = "auto", storage_config: Optional[dict] = None):
+    """Async implementation of restore execution."""
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    # Create a new async engine for this event loop
+    engine = create_async_engine(
+        str(settings.DATABASE_URL),
+        echo=settings.DB_ECHO,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+    )
+    SessionLocal = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+
+    async with SessionLocal() as db:
+        job = None
+        try:
+            # Get backup
+            backup = await db.get(Backup, backup_id)
+            if not backup:
+                raise Exception("Backup not found")
+
+            if backup.status != BackupStatus.COMPLETED:
+                raise Exception(f"Cannot restore backup with status: {backup.status}")
+
+            # Find existing PENDING job created by API endpoint
+            stmt = select(Job).where(
+                Job.celery_task_id == celery_app.current_task.request.id
+            )
+            result = await db.execute(stmt)
+            job = result.scalar_one_or_none()
+
+            if not job:
+                # If no job exists (shouldn't happen), create one
+                job = Job(
+                    type=JobType.RESTORE,
+                    status=JobStatus.RUNNING,
+                    backup_id=backup_id,
+                    started_at=datetime.utcnow(),
+                    celery_task_id=celery_app.current_task.request.id,
+                    job_metadata={
+                        "target_host_id": target_host_id,
+                        "new_name": new_name,
+                        "overwrite": overwrite
+                    }
+                )
+                db.add(job)
+            else:
+                # Update existing job to RUNNING
+                job.status = JobStatus.RUNNING
+                job.started_at = datetime.utcnow()
+
+            await db.commit()
+
+            # Set logging context for this restore job
+            with LoggingContext(job_id=job.id, backup_id=backup_id):
+                # Log start
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Starting restore of {backup.source_type} {backup.source_name}"
+                )
+                db.add(log)
+                await db.commit()
+
+                # Execute restore based on source type
+                if backup.source_type == SourceType.VM:
+                    result = await _restore_vm(db, backup, job, target_host_id, new_name, overwrite, storage_type, storage_config)
+                elif backup.source_type == SourceType.CONTAINER:
+                    raise Exception("Container restore not yet implemented")
+                else:
+                    raise Exception(f"Unknown source type: {backup.source_type}")
+
+                # Update job
+                job.status = JobStatus.COMPLETED
+                job.completed_at = datetime.utcnow()
+
+                # Log completion
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Restore completed successfully. Restored as: {result.get('vm_name', result.get('container_name', 'unknown'))}"
+                )
+                db.add(log)
+
+                await db.commit()
+
+                return {
+                    "success": True,
+                    "backup_id": backup_id,
+                    "result": result
+                }
+
+        except Exception as e:
+            # Set logging context for error handling
+            with LoggingContext(job_id=job.id if job else None, backup_id=backup_id):
+                # Update job
+                if job:
+                    job.status = JobStatus.FAILED
+                    job.error_message = str(e)
+                    job.completed_at = datetime.utcnow()
+
+                    # Log error
+                    log = JobLog(
+                        job_id=job.id,
+                        level="ERROR",
+                        message=f"Restore failed: {str(e)}"
+                    )
+                    db.add(log)
+
+                await db.commit()
+
+                return {
+                    "success": False,
+                    "error": str(e)
+                }
+        finally:
+            # Dispose engine to clean up connections
+            await engine.dispose()
+
+
+async def _restore_vm(db, backup, job, target_host_id, new_name, overwrite, storage_type="auto", storage_config=None):
+    """Execute VM restore."""
+    from backend.models.infrastructure import VM, KVMHost
+    from backend.models.storage import StorageBackend as StorageBackendModel
+
+    # Get original VM to determine original host if target not specified
+    if target_host_id:
+        target_host = await db.get(KVMHost, target_host_id)
+        if not target_host:
+            raise Exception(f"Target KVM host with ID {target_host_id} not found")
+    else:
+        # Restore to original host
+        original_vm = await db.get(VM, backup.source_id)
+        if not original_vm:
+            raise Exception(f"Original VM with ID {backup.source_id} not found")
+        target_host = await db.get(KVMHost, original_vm.kvm_host_id)
+        if not target_host:
+            raise Exception(f"Original KVM host not found for VM {backup.source_name}")
+
+    # Log
+    log = JobLog(
+        job_id=job.id,
+        level="INFO",
+        message=f"Target KVM host: {target_host.name}"
+    )
+    db.add(log)
+    await db.commit()
+
+    # Get storage backend
+    storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
+    if not storage_backend_model:
+        raise Exception("Storage backend not found")
+
+    storage = create_storage_backend(
+        storage_backend_model.type,
+        storage_backend_model.config
+    )
+
+    # Create temp directory for restore
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        # Download backup from storage
+        log = JobLog(
+            job_id=job.id,
+            level="INFO",
+            message=f"Downloading backup from storage: {backup.storage_path}"
+        )
+        db.add(log)
+        await db.commit()
+
+        downloaded_file = temp_path / Path(backup.storage_path).name
+        await storage.download(
+            source_path=backup.storage_path,
+            destination_path=downloaded_file
+        )
+
+        # Decrypt if needed
+        file_to_extract = downloaded_file
+        if backup.storage_path.endswith('.encrypted'):
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Decrypting backup..."
+            )
+            db.add(log)
+            await db.commit()
+
+            from backend.core.encryption import decrypt_backup
+            decrypted_file = temp_path / downloaded_file.name.replace('.encrypted', '')
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: decrypt_backup(
+                    downloaded_file,
+                    decrypted_file,
+                    settings.ENCRYPTION_KEY,
+                    use_chunked=True
+                )
+            )
+            file_to_extract = decrypted_file
+
+        # Extract archive
+        log = JobLog(
+            job_id=job.id,
+            level="INFO",
+            message="Extracting backup archive..."
+        )
+        db.add(log)
+        await db.commit()
+
+        extract_dir = temp_path / "extracted"
+        extract_dir.mkdir()
+
+        def _extract():
+            import tarfile
+            with tarfile.open(file_to_extract, 'r:gz') as tar:
+                tar.extractall(extract_dir)
+
+        await asyncio.get_event_loop().run_in_executor(None, _extract)
+
+        # Find the backup directory (should be the only subdirectory)
+        backup_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+        if not backup_dirs:
+            raise Exception("No backup directory found in archive")
+
+        backup_dir = backup_dirs[0]
+
+        # Restore VM
+        log = JobLog(
+            job_id=job.id,
+            level="INFO",
+            message=f"Restoring VM to host {target_host.name}..."
+        )
+        db.add(log)
+        await db.commit()
+
+        kvm_service = KVMBackupService()
+        restore_result = await kvm_service.restore_vm(
+            uri=target_host.uri,
+            backup_dir=backup_dir,
+            new_name=new_name,
+            overwrite=overwrite,
+            storage_type=storage_type,
+            storage_config=storage_config,
+            host_config=target_host.config or {}
+        )
+
+        # If this is a new VM (not overwriting), create a new VM record
+        if new_name and not overwrite:
+            new_vm = VM(
+                name=restore_result["vm_name"],
+                uuid=restore_result["vm_uuid"],
+                state="shutoff",
+                vcpus=0,  # Will be updated on next discovery
+                memory=0,
+                kvm_host_id=target_host.id
+            )
+            db.add(new_vm)
+            await db.commit()
+
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Created new VM record: {new_vm.name}"
+            )
+            db.add(log)
+            await db.commit()
+
+        return restore_result
 
 
 @celery_app.task(name="backend.worker.check_scheduled_backups")
@@ -579,3 +948,22 @@ async def _update_storage_usage_async():
         await db.commit()
 
         return {"backends_updated": len(backends)}
+
+
+@celery_app.task(name="backend.worker.cleanup_logs")
+def cleanup_logs():
+    """Clean up old logs based on retention policies."""
+    import asyncio
+    return asyncio.run(_cleanup_logs_async())
+
+
+async def _cleanup_logs_async():
+    """Async implementation of log cleanup."""
+    from backend.services.log_cleanup import run_log_cleanup
+
+    try:
+        stats = await run_log_cleanup()
+        return stats
+    except Exception as e:
+        print(f"Error during log cleanup: {e}")
+        return {"error": str(e)}

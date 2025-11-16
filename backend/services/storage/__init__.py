@@ -6,6 +6,7 @@ from backend.models.storage import StorageType
 from backend.services.storage.base import StorageBackend, StorageError
 from backend.services.storage.local import LocalStorage
 from backend.services.storage.s3 import S3Storage
+from backend.services.storage.smb import SMBStorage
 
 
 def create_storage_backend(
@@ -30,8 +31,7 @@ def create_storage_backend(
     elif storage_type == StorageType.S3:
         return S3Storage(config)
     elif storage_type == StorageType.SMB:
-        # TODO: Implement SMB storage
-        raise StorageError("SMB storage not yet implemented")
+        return SMBStorage(config)
     elif storage_type == StorageType.NFS:
         # TODO: Implement NFS storage
         raise StorageError("NFS storage not yet implemented")
@@ -44,5 +44,6 @@ __all__ = [
     "StorageError",
     "LocalStorage",
     "S3Storage",
+    "SMBStorage",
     "create_storage_backend"
 ]

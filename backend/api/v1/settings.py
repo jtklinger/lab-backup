@@ -278,6 +278,19 @@ async def initialize_setup(
 
         # System Settings
         ("system.setup_complete", True, "boolean", "system", "Initial setup completed"),
+
+        # Session Settings
+        ("session.timeout_minutes", 30, "integer", "security", "Session timeout in minutes (1-60)"),
+        ("session.warning_minutes", 5, "integer", "security", "Show warning N minutes before expiration (1-30)"),
+
+        # Logging Settings
+        ("logging.retention_days", 30, "integer", "logging", "Days to keep application logs (1-365)"),
+        ("logging.level", "INFO", "string", "logging", "Global log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"),
+        ("logging.database_enabled", True, "boolean", "logging", "Enable database logging"),
+        ("logging.file_enabled", True, "boolean", "logging", "Enable file logging"),
+        ("logging.file_max_size_mb", 100, "integer", "logging", "Maximum log file size in MB (1-1000)"),
+        ("logging.file_backup_count", 10, "integer", "logging", "Number of backup log files to keep (1-50)"),
+        ("logging.error_retention_days", 90, "integer", "logging", "Days to keep ERROR/CRITICAL logs (longer than general logs)"),
     ]
 
     for key, value, value_type, category, description, *is_secret in default_settings:

@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "Lab Backup System"
 
     # Logging
-    LOG_LEVEL: str = "INFO"
+    LOG_LEVEL: str = "info"  # lowercase for uvicorn compatibility
     LOG_FORMAT: str = "json"  # json or text
     LOG_FILE: Optional[str] = "/var/log/lab-backup/app.log"
     SYSLOG_ENABLED: bool = False
