@@ -214,19 +214,115 @@ function showAddKVMHostDialog() {
                     <span>Enable host</span>
                 </label>
             </div>
+
+            <!-- SSH Key Configuration -->
+            <div style="border-top: 1px solid var(--border-color); margin-top: 1.5rem; padding-top: 1.5rem;">
+                <h4 style="margin-bottom: 0.75rem;">SSH Authentication (Optional)</h4>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="radio" name="ssh_key_option" value="default" checked onchange="toggleSSHKeyFields()">
+                        <span>Use default SSH keys from ~/.ssh</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
+                        <input type="radio" name="ssh_key_option" value="upload" onchange="toggleSSHKeyFields()">
+                        <span>Upload existing SSH key</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
+                        <input type="radio" name="ssh_key_option" value="generate" onchange="toggleSSHKeyFields()">
+                        <span>Generate new SSH key</span>
+                    </label>
+                </div>
+
+                <!-- Upload SSH Key Fields -->
+                <div id="uploadSSHKeyFields" style="display: none; margin-top: 1rem;">
+                    <div class="form-group">
+                        <label class="form-label">Key Type</label>
+                        <select class="form-input" name="upload_key_type">
+                            <option value="ed25519">ed25519</option>
+                            <option value="rsa">RSA</option>
+                            <option value="ecdsa">ECDSA</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Private Key</label>
+                        <textarea class="form-input" name="upload_private_key" rows="6"
+                                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Public Key</label>
+                        <textarea class="form-input" name="upload_public_key" rows="2"
+                                  placeholder="ssh-ed25519 AAAA..."></textarea>
+                    </div>
+                </div>
+
+                <!-- Generate SSH Key Fields -->
+                <div id="generateSSHKeyFields" style="display: none; margin-top: 1rem;">
+                    <div class="form-group">
+                        <label class="form-label">Key Type</label>
+                        <select class="form-input" name="generate_key_type" id="generateKeyTypeSelect" onchange="toggleGenerateKeySize()">
+                            <option value="ed25519">ed25519 (Recommended)</option>
+                            <option value="rsa">RSA</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="generateKeySizeGroup" style="display: none;">
+                        <label class="form-label">RSA Key Size</label>
+                        <select class="form-input" name="generate_key_size">
+                            <option value="2048">2048 bits</option>
+                            <option value="4096" selected>4096 bits</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
         </form>
     `);
 
     modal.setOnConfirm(async () => {
         try {
             const form = document.getElementById('addKVMHostForm');
-            const data = getFormData(form);
+            const formData = getFormData(form);
 
             const loading = showLoading(modal.overlay);
-            await api.createKVMHost(data);
-            hideLoading(loading);
 
-            notify.success('KVM host added successfully');
+            // Create the KVM host first
+            const newHost = await api.createKVMHost({
+                name: formData.name,
+                uri: formData.uri,
+                enabled: formData.enabled
+            });
+
+            // Handle SSH key creation if needed
+            const sshKeyOption = formData.ssh_key_option;
+            if (sshKeyOption === 'upload' && formData.upload_private_key && formData.upload_public_key) {
+                // Upload the SSH key
+                await api.uploadSSHKey(newHost.id, {
+                    key_type: formData.upload_key_type,
+                    private_key: formData.upload_private_key,
+                    public_key: formData.upload_public_key
+                });
+                notify.success('KVM host and SSH key added successfully');
+            } else if (sshKeyOption === 'generate') {
+                // Generate new SSH key
+                const keyParams = {
+                    key_type: formData.generate_key_type
+                };
+                if (formData.generate_key_type === 'rsa') {
+                    keyParams.key_size = parseInt(formData.generate_key_size);
+                }
+                const newKey = await api.generateSSHKey(newHost.id, keyParams);
+
+                hideLoading(loading);
+                notify.success('KVM host added and SSH key generated');
+                modal.close();
+
+                // Show the public key to the user
+                await showPublicKey(newHost.id, newKey.id);
+                renderKVM();
+                return;
+            } else {
+                notify.success('KVM host added successfully');
+            }
+
+            hideLoading(loading);
             modal.close();
             renderKVM();
         } catch (error) {
@@ -235,6 +331,18 @@ function showAddKVMHostDialog() {
     });
 
     modal.show();
+}
+
+// Helper functions for Add KVM Host dialog
+function toggleSSHKeyFields() {
+    const option = document.querySelector('input[name="ssh_key_option"]:checked').value;
+    document.getElementById('uploadSSHKeyFields').style.display = option === 'upload' ? 'block' : 'none';
+    document.getElementById('generateSSHKeyFields').style.display = option === 'generate' ? 'block' : 'none';
+}
+
+function toggleGenerateKeySize() {
+    const keyType = document.getElementById('generateKeyTypeSelect').value;
+    document.getElementById('generateKeySizeGroup').style.display = keyType === 'rsa' ? 'block' : 'none';
 }
 
 async function refreshKVMHost(hostId) {
@@ -341,7 +449,12 @@ async function showSSHKeyDialog(hostId, hostName) {
 
         modal.show();
     } catch (error) {
-        notify.error('Failed to load SSH keys: ' + error.message);
+        // Provide more specific error message
+        if (error.message.includes('not found') || error.message.includes('404')) {
+            notify.error(`KVM host "${hostName}" not found. Please refresh the page.`);
+        } else {
+            notify.error('Failed to load SSH keys: ' + error.message);
+        }
     }
 }
 

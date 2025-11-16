@@ -201,6 +201,65 @@ async def create_host(
     return host
 
 
+@router.put("/hosts/{host_id}", response_model=KVMHostResponse)
+async def update_host(
+    host_id: int,
+    host_data: KVMHostCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """Update a KVM host."""
+    host = await db.get(KVMHost, host_id)
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="KVM host not found"
+        )
+
+    # Test connection if URI changed
+    if host_data.uri != host.uri:
+        kvm_service = KVMBackupService()
+        if not await kvm_service.test_connection(host_data.uri):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to connect to KVM host"
+            )
+
+    # Update host fields
+    host.name = host_data.name
+    host.uri = host_data.uri
+    host.username = host_data.username
+    host.auth_type = host_data.auth_type
+    host.config = host_data.config or {}
+
+    await db.commit()
+    await db.refresh(host)
+
+    return host
+
+
+@router.delete("/hosts/{host_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_host(
+    host_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """Delete a KVM host and all associated VMs."""
+    host = await db.get(KVMHost, host_id)
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="KVM host not found"
+        )
+
+    await db.delete(host)
+    await db.commit()
+
+    logger.info(f"KVM host deleted: {host.name} (ID: {host_id})")
+
+    return None
+
+
 @router.get("/vms", response_model=List[VMResponse])
 async def list_all_vms(
     host_id: Optional[int] = None,
