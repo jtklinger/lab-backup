@@ -15,7 +15,7 @@ from backend.models.base import get_db
 from backend.models.user import User, UserRole
 from backend.models.infrastructure import KVMHost, VM, SSHKey
 from backend.core.security import get_current_user, require_role
-from backend.core.config import get_settings
+from backend.core.config import settings
 from backend.core.encryption import encrypt_ssh_private_key, decrypt_ssh_private_key
 from backend.services.kvm.backup import KVMBackupService
 
@@ -434,9 +434,6 @@ async def upload_ssh_key(
             detail="KVM host not found"
         )
 
-    # Get settings for encryption key
-    settings = get_settings()
-
     # Encrypt the private key
     try:
         encrypted_private_key = encrypt_ssh_private_key(
@@ -512,9 +509,6 @@ async def generate_ssh_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate SSH key: {str(e)}"
         )
-
-    # Get settings for encryption key
-    settings = get_settings()
 
     # Encrypt the private key
     try:

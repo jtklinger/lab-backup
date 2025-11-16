@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.infrastructure import SSHKey
 from backend.core.encryption import decrypt_ssh_private_key
-from backend.core.config import get_settings
+from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,6 @@ class SSHKeyManager:
             db: Database session for retrieving SSH keys
         """
         self.db = db
-        self.settings = get_settings()
 
     async def get_ssh_key(self, kvm_host_id: int) -> Optional[SSHKey]:
         """
@@ -59,7 +58,7 @@ class SSHKeyManager:
         try:
             return decrypt_ssh_private_key(
                 ssh_key.private_key_encrypted,
-                self.settings.SECRET_KEY
+                settings.SECRET_KEY
             )
         except Exception as e:
             logger.error(f"Failed to decrypt SSH key (ID: {ssh_key.id}): {e}")
