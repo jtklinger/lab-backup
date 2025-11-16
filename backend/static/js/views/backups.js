@@ -561,8 +561,8 @@ async function viewBackupLogs(backupId) {
             </div>
         `);
 
-        modal.overlay.querySelector('.modal-footer').style.display = 'none';
         modal.show();
+        modal.overlay.querySelector('.modal-footer').style.display = 'none';
 
     } catch (error) {
         notify.error('Failed to load backup logs: ' + error.message);

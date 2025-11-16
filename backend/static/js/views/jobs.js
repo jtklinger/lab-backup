@@ -226,8 +226,8 @@ async function viewJobLogs(jobId) {
             </div>
         `);
 
-        modal.overlay.querySelector('.modal-footer').style.display = 'none';
         modal.show();
+        modal.overlay.querySelector('.modal-footer').style.display = 'none';
 
     } catch (error) {
         notify.error('Failed to load job logs: ' + error.message);
