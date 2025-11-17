@@ -409,6 +409,10 @@ class APIClient {
     async getApplicationLogStats() {
         return this.request('/logs/application/stats');
     }
+
+    async clearApplicationLogs() {
+        return this.request('/logs/application', { method: 'DELETE' });
+    }
 }
 
 // Create global API instance

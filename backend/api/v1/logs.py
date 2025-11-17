@@ -141,6 +141,8 @@ async def get_application_logs(
     backup_id: Optional[int] = Query(None, description="Filter by backup ID"),
     user_id: Optional[int] = Query(None, description="Filter by user ID"),
     request_id: Optional[str] = Query(None, description="Filter by request ID"),
+    start_time: Optional[datetime] = Query(None, description="Filter logs after this time (ISO 8601)"),
+    end_time: Optional[datetime] = Query(None, description="Filter logs before this time (ISO 8601)"),
     limit: int = Query(100, ge=1, le=1000, description="Number of logs to return"),
     offset: int = Query(0, ge=0, description="Number of logs to skip"),
     db: AsyncSession = Depends(get_db),
@@ -170,6 +172,10 @@ async def get_application_logs(
         filters.append(ApplicationLog.user_id == user_id)
     if request_id:
         filters.append(ApplicationLog.request_id == request_id)
+    if start_time:
+        filters.append(ApplicationLog.timestamp >= start_time)
+    if end_time:
+        filters.append(ApplicationLog.timestamp <= end_time)
 
     if filters:
         query = query.where(and_(*filters))

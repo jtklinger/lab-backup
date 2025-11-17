@@ -24,8 +24,8 @@ async function renderLogs() {
 
     try {
         const [logsData, stats] = await Promise.all([
-            api.getLogs({ limit: 200 }),
-            api.getLogStats(),
+            api.getApplicationLogs({ limit: 200 }),
+            api.getApplicationLogStats(),
         ]);
 
         renderLogsContent(logsData, stats);
@@ -82,9 +82,44 @@ function renderLogsContent(logsData, stats) {
         <!-- Filters -->
         <div class="card" style="margin-bottom: 1.5rem;">
             <div class="card-body">
-                <div style="display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 1rem; align-items: end;">
+                <!-- Quick Time Range Filters -->
+                <div style="margin-bottom: 1rem;">
+                    <label class="form-label">Time Range:</label>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button class="btn btn-sm btn-secondary" onclick="setTimeRange('1h')">Last Hour</button>
+                        <button class="btn btn-sm btn-secondary" onclick="setTimeRange('24h')">Last 24 Hours</button>
+                        <button class="btn btn-sm btn-secondary" onclick="setTimeRange('7d')">Last 7 Days</button>
+                        <button class="btn btn-sm btn-secondary" onclick="setTimeRange('30d')">Last 30 Days</button>
+                        <button class="btn btn-sm btn-secondary" onclick="setTimeRange('all')">All Time</button>
+                    </div>
+                </div>
+
+                <!-- Custom Date Range -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
                     <div class="form-group" style="margin-bottom: 0;">
-                        <label class="form-label">Filter by Level:</label>
+                        <label class="form-label">Start Time:</label>
+                        <input type="datetime-local" id="startTimeFilter" class="form-input" onchange="filterLogs()">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label">End Time:</label>
+                        <input type="datetime-local" id="endTimeFilter" class="form-input" onchange="filterLogs()">
+                    </div>
+                </div>
+
+                <!-- Quick Severity Filters -->
+                <div style="margin-bottom: 1rem;">
+                    <label class="form-label">Quick Filters:</label>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button class="btn btn-sm" style="background: #ef4444; color: white;" onclick="setQuickFilter('errors')">Errors Only</button>
+                        <button class="btn btn-sm" style="background: #f59e0b; color: white;" onclick="setQuickFilter('warnings+')">Warnings &amp; Above</button>
+                        <button class="btn btn-sm btn-secondary" onclick="clearAllFilters()">Clear All Filters</button>
+                    </div>
+                </div>
+
+                <!-- Standard Filters -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 1rem; margin-bottom: 1rem;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label">Level:</label>
                         <select id="levelFilter" class="form-select" onchange="filterLogs()">
                             <option value="">All Levels</option>
                             <option value="DEBUG">Debug</option>
@@ -95,14 +130,33 @@ function renderLogsContent(logsData, stats) {
                         </select>
                     </div>
                     <div class="form-group" style="margin-bottom: 0;">
-                        <label class="form-label">Filter by Logger:</label>
+                        <label class="form-label">Logger/Service:</label>
                         <input type="text" id="loggerFilter" class="form-input"
-                               placeholder="e.g., backend.services.storage" oninput="filterLogs()">
+                               placeholder="e.g., backend.services.kvm" oninput="filterLogs()">
                     </div>
                     <div class="form-group" style="margin-bottom: 0;">
                         <label class="form-label">Search Messages:</label>
                         <input type="text" id="searchFilter" class="form-input"
                                placeholder="Search in log messages..." oninput="filterLogs()">
+                    </div>
+                </div>
+
+                <!-- Context Filters -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label">Job ID:</label>
+                        <input type="number" id="jobIdFilter" class="form-input"
+                               placeholder="Filter by job ID" oninput="filterLogs()">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label">Backup ID:</label>
+                        <input type="number" id="backupIdFilter" class="form-input"
+                               placeholder="Filter by backup ID" oninput="filterLogs()">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label">User ID:</label>
+                        <input type="number" id="userIdFilter" class="form-input"
+                               placeholder="Filter by user ID" oninput="filterLogs()">
                     </div>
                 </div>
             </div>
@@ -167,14 +221,24 @@ async function filterLogs() {
     const level = document.getElementById('levelFilter').value;
     const logger = document.getElementById('loggerFilter').value;
     const search = document.getElementById('searchFilter').value;
+    const startTime = document.getElementById('startTimeFilter').value;
+    const endTime = document.getElementById('endTimeFilter').value;
+    const jobId = document.getElementById('jobIdFilter').value;
+    const backupId = document.getElementById('backupIdFilter').value;
+    const userId = document.getElementById('userIdFilter').value;
 
     try {
         const params = { limit: 200 };
         if (level) params.level = level;
         if (logger) params.logger = logger;
         if (search) params.search = search;
+        if (startTime) params.start_time = new Date(startTime).toISOString();
+        if (endTime) params.end_time = new Date(endTime).toISOString();
+        if (jobId) params.job_id = parseInt(jobId);
+        if (backupId) params.backup_id = parseInt(backupId);
+        if (userId) params.user_id = parseInt(userId);
 
-        const logsData = await api.getLogs(params);
+        const logsData = await api.getApplicationLogs(params);
 
         // Update log container
         const logsContainer = document.getElementById('logsContainer');
@@ -184,6 +248,57 @@ async function filterLogs() {
     } catch (error) {
         notify.error('Failed to filter logs: ' + error.message);
     }
+}
+
+// Set predefined time range
+function setTimeRange(range) {
+    const now = new Date();
+    const startTimeInput = document.getElementById('startTimeFilter');
+    const endTimeInput = document.getElementById('endTimeFilter');
+
+    endTimeInput.value = now.toISOString().slice(0, 16);
+
+    if (range === 'all') {
+        startTimeInput.value = '';
+        endTimeInput.value = '';
+    } else if (range === '1h') {
+        startTimeInput.value = new Date(now - 3600000).toISOString().slice(0, 16);
+    } else if (range === '24h') {
+        startTimeInput.value = new Date(now - 86400000).toISOString().slice(0, 16);
+    } else if (range === '7d') {
+        startTimeInput.value = new Date(now - 604800000).toISOString().slice(0, 16);
+    } else if (range === '30d') {
+        startTimeInput.value = new Date(now - 2592000000).toISOString().slice(0, 16);
+    }
+
+    filterLogs();
+}
+
+// Set quick severity filter
+function setQuickFilter(type) {
+    const levelFilter = document.getElementById('levelFilter');
+
+    if (type === 'errors') {
+        levelFilter.value = 'ERROR';
+    } else if (type === 'warnings+') {
+        levelFilter.value = 'WARNING';
+    }
+
+    filterLogs();
+}
+
+// Clear all filters
+function clearAllFilters() {
+    document.getElementById('levelFilter').value = '';
+    document.getElementById('loggerFilter').value = '';
+    document.getElementById('searchFilter').value = '';
+    document.getElementById('startTimeFilter').value = '';
+    document.getElementById('endTimeFilter').value = '';
+    document.getElementById('jobIdFilter').value = '';
+    document.getElementById('backupIdFilter').value = '';
+    document.getElementById('userIdFilter').value = '';
+
+    filterLogs();
 }
 
 function toggleAutoRefresh() {
@@ -211,7 +326,7 @@ async function clearLogsConfirm() {
         'Are you sure you want to clear all stored logs? This action cannot be undone.',
         async () => {
             try {
-                await api.clearLogs();
+                await api.clearApplicationLogs();
                 notify.success('Logs cleared successfully');
                 renderLogs();
             } catch (error) {
