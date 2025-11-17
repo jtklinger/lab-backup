@@ -24,8 +24,8 @@ async function renderLogs() {
 
     try {
         const [logsData, stats] = await Promise.all([
-            api.getApplicationLogs({ limit: 200 }),
-            api.getApplicationLogStats(),
+            api.getLogs({ limit: 200 }),
+            api.getLogStats(),
         ]);
 
         renderLogsContent(logsData, stats);
@@ -174,7 +174,7 @@ async function filterLogs() {
         if (logger) params.logger = logger;
         if (search) params.search = search;
 
-        const logsData = await api.getApplicationLogs(params);
+        const logsData = await api.getLogs(params);
 
         // Update log container
         const logsContainer = document.getElementById('logsContainer');
@@ -211,7 +211,7 @@ async function clearLogsConfirm() {
         'Are you sure you want to clear all stored logs? This action cannot be undone.',
         async () => {
             try {
-                await api.clearApplicationLogs();
+                await api.clearLogs();
                 notify.success('Logs cleared successfully');
                 renderLogs();
             } catch (error) {
