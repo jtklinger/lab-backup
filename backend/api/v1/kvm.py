@@ -16,7 +16,12 @@ from backend.models.user import User, UserRole
 from backend.models.infrastructure import KVMHost, VM, SSHKey
 from backend.core.security import get_current_user, require_role
 from backend.core.config import settings
-from backend.core.encryption import encrypt_ssh_private_key, decrypt_ssh_private_key
+from backend.core.encryption import (
+    encrypt_ssh_private_key,
+    decrypt_ssh_private_key,
+    encrypt_password,
+    decrypt_password
+)
 from backend.services.kvm.backup import KVMBackupService
 
 logger = logging.getLogger(__name__)
@@ -67,6 +72,7 @@ class KVMHostCreate(BaseModel):
     uri: str
     username: Optional[str] = None
     auth_type: str = "ssh"
+    password: Optional[str] = None  # Plain text password for auth_type="password"
     config: Optional[dict] = None
 
 
@@ -144,8 +150,11 @@ async def list_hosts(
         storage_caps = None
         if host.enabled:
             try:
-                # Setup SSH key from database if available
-                await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
+                # Setup authentication (SSH key or password) from database if available
+                if host.auth_type == "password":
+                    await kvm_service.setup_auth_for_host(db, host.id)
+                else:
+                    await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
 
                 # Query storage capabilities
                 caps_dict = await kvm_service.list_storage_pools(host.uri)
@@ -173,23 +182,54 @@ async def list_hosts(
 @router.post("/hosts", response_model=KVMHostResponse, status_code=status.HTTP_201_CREATED)
 async def create_host(
     host_data: KVMHostCreate,
+    skip_connection_test: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.OPERATOR))
 ):
     """Create a new KVM host."""
-    # Test connection first
-    kvm_service = KVMBackupService()
-    if not await kvm_service.test_connection(host_data.uri):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to connect to KVM host"
-        )
+    # Test connection first (unless skipped for SSH key setup)
+    if not skip_connection_test:
+        kvm_service = KVMBackupService()
+
+        # For password auth, test with the provided password
+        if host_data.auth_type == "password" and host_data.password:
+            if not await kvm_service.test_connection(
+                host_data.uri,
+                password=host_data.password,
+                username=host_data.username
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Failed to connect to KVM host with provided credentials"
+                )
+        else:
+            if not await kvm_service.test_connection(host_data.uri):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Failed to connect to KVM host"
+                )
+
+    # Encrypt password if provided
+    password_encrypted = None
+    if host_data.auth_type == "password" and host_data.password:
+        try:
+            password_encrypted = encrypt_password(
+                host_data.password,
+                settings.SECRET_KEY
+            )
+        except Exception as e:
+            logger.error(f"Failed to encrypt password: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to encrypt password"
+            )
 
     host = KVMHost(
         name=host_data.name,
         uri=host_data.uri,
         username=host_data.username,
         auth_type=host_data.auth_type,
+        password_encrypted=password_encrypted,
         config=host_data.config or {},
         enabled=True
     )
@@ -216,14 +256,44 @@ async def update_host(
             detail="KVM host not found"
         )
 
-    # Test connection if URI changed
-    if host_data.uri != host.uri:
+    # Test connection if URI or auth changed
+    if host_data.uri != host.uri or host_data.auth_type != host.auth_type:
         kvm_service = KVMBackupService()
-        if not await kvm_service.test_connection(host_data.uri):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Failed to connect to KVM host"
+
+        # For password auth, test with the provided password
+        if host_data.auth_type == "password" and host_data.password:
+            if not await kvm_service.test_connection(
+                host_data.uri,
+                password=host_data.password,
+                username=host_data.username
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Failed to connect to KVM host with provided credentials"
+                )
+        else:
+            if not await kvm_service.test_connection(host_data.uri):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Failed to connect to KVM host"
+                )
+
+    # Update password if provided (or clear if switching away from password auth)
+    if host_data.auth_type == "password" and host_data.password:
+        try:
+            host.password_encrypted = encrypt_password(
+                host_data.password,
+                settings.SECRET_KEY
             )
+        except Exception as e:
+            logger.error(f"Failed to encrypt password: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to encrypt password"
+            )
+    elif host_data.auth_type != "password":
+        # Clear password if not using password auth
+        host.password_encrypted = None
 
     # Update host fields
     host.name = host_data.name
@@ -297,8 +367,11 @@ async def list_vms(
         # Sync VMs from libvirt
         kvm_service = KVMBackupService()
 
-        # Setup SSH key from database if available
-        await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
+        # Setup authentication (SSH key or password) from database if available
+        if host.auth_type == "password":
+            await kvm_service.setup_auth_for_host(db, host.id)
+        else:
+            await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
 
         # List VMs from the host
         vms_data = await kvm_service.list_vms(host.uri)
@@ -355,8 +428,11 @@ async def refresh_host(
     # Sync VMs from libvirt
     kvm_service = KVMBackupService()
     try:
-        # Setup SSH key from database if available
-        await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
+        # Setup authentication (SSH key or password) from database if available
+        if host.auth_type == "password":
+            await kvm_service.setup_auth_for_host(db, host.id)
+        else:
+            await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
 
         # List VMs from the host
         vms_data = await kvm_service.list_vms(host.uri)

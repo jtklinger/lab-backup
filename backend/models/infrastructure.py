@@ -22,7 +22,8 @@ class KVMHost(Base):
         String(50),
         default="ssh",
         nullable=False
-    )  # ssh, tls, local
+    )  # ssh, password, tls, local
+    password_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
     last_sync: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)

@@ -260,9 +260,11 @@ class APIClient {
     }
 
     async createKVMHost(data) {
-        return this.request('/kvm/hosts', {
+        const { skip_connection_test, ...hostData } = data;
+        const url = skip_connection_test ? `/kvm/hosts?skip_connection_test=true` : '/kvm/hosts';
+        return this.request(url, {
             method: 'POST',
-            body: data,
+            body: hostData,
         });
     }
 

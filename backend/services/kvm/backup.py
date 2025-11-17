@@ -26,6 +26,8 @@ class KVMBackupService:
     def __init__(self):
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.connections: Dict[str, libvirt.virConnect] = {}
+        # Store auth credentials per URI for automatic use
+        self.auth_credentials: Dict[str, tuple[Optional[str], Optional[str]]] = {}  # uri -> (password, username)
 
     async def _run_in_executor(self, func, *args):
         """Run blocking libvirt call in executor."""
@@ -44,10 +46,86 @@ class KVMBackupService:
             Hostname or None if not found
         """
         # Match pattern: qemu+ssh://[user@]hostname[:port]/system
-        match = re.search(r'qemu\+ssh://(?:[^@]+@)?([^:/]+)', uri)
+        match = re.search(r'qemu\+(?:ssh|tcp|tls)://(?:[^@]+@)?([^:/]+)', uri)
         if match:
             return match.group(1)
         return None
+
+    @staticmethod
+    def _extract_username_from_uri(uri: str) -> Optional[str]:
+        """
+        Extract username from a libvirt URI.
+
+        Args:
+            uri: libvirt URI (e.g., qemu+tcp://user@hostname/system)
+
+        Returns:
+            Username or None if not found
+        """
+        # Match pattern: qemu+tcp://username@hostname/system
+        match = re.search(r'qemu\+(?:tcp|tls)://([^@]+)@', uri)
+        if match:
+            return match.group(1)
+        return None
+
+    async def setup_auth_for_host(
+        self,
+        db: AsyncSession,
+        kvm_host_id: int
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        Get authentication credentials for a KVM host from database.
+
+        This will:
+        1. Query the KVM host from database
+        2. If auth_type is 'password', decrypt and return password
+        3. Store credentials in self.auth_credentials for automatic use
+        4. Return (password, username) tuple
+
+        Args:
+            db: Database session
+            kvm_host_id: ID of the KVM host
+
+        Returns:
+            Tuple of (password, username) - both None if not using password auth
+        """
+        from backend.models.infrastructure import KVMHost
+        from backend.core.encryption import decrypt_password
+        from backend.core.config import settings
+        from sqlalchemy import select
+
+        try:
+            # Query KVM host
+            result = await db.execute(
+                select(KVMHost).where(KVMHost.id == kvm_host_id)
+            )
+            kvm_host = result.scalar_one_or_none()
+
+            if not kvm_host:
+                logger.warning(f"KVM host {kvm_host_id} not found")
+                return None, None
+
+            # Check if using password authentication
+            if kvm_host.auth_type == "password" and kvm_host.password_encrypted:
+                # Decrypt password
+                password = decrypt_password(
+                    kvm_host.password_encrypted,
+                    settings.SECRET_KEY
+                )
+                username = kvm_host.username
+
+                # Store credentials for automatic use with this URI
+                self.auth_credentials[kvm_host.uri] = (password, username)
+
+                logger.debug(f"Retrieved password authentication for KVM host {kvm_host_id}")
+                return password, username
+            else:
+                logger.debug(f"KVM host {kvm_host_id} not using password authentication")
+                return None, None
+
+        except Exception as e:
+            logger.error(f"Failed to get authentication for KVM host {kvm_host_id}: {e}")
+            raise
 
     async def setup_ssh_key_for_host(
         self,
@@ -179,25 +257,117 @@ Host {hostname}
             logger.error(f"Failed to setup SSH key for KVM host {kvm_host_id}: {e}")
             raise
 
-    def _get_connection(self, uri: str) -> libvirt.virConnect:
-        """Get or create libvirt connection."""
-        if uri not in self.connections:
+    def _get_connection(
+        self,
+        uri: str,
+        password: Optional[str] = None,
+        username: Optional[str] = None
+    ) -> libvirt.virConnect:
+        """
+        Get or create libvirt connection.
+
+        Args:
+            uri: libvirt connection URI
+            password: Optional password for SASL/TCP authentication
+            username: Optional username for authentication
+
+        Returns:
+            libvirt connection object
+        """
+        # Check if we have stored credentials for this URI (unless explicitly provided)
+        if password is None and uri in self.auth_credentials:
+            password, username = self.auth_credentials[uri]
+            logger.debug(f"Using stored credentials for URI: {uri}")
+
+        # Create a unique key for this connection including auth info
+        conn_key = uri
+        if password:
+            # For password-based connections, we'll create a fresh connection each time
+            # to avoid caching issues with credentials
+            conn_key = f"{uri}:with_password"
+
+        if conn_key not in self.connections:
             try:
-                conn = libvirt.open(uri)
+                if password:
+                    # Use openAuth for password-based authentication
+                    logger.info(f"Connecting to libvirt host with password authentication: {uri}")
+                    logger.debug(f"Username: {username}, Password provided: {bool(password)}")
+
+                    # Extract username from URI if not provided
+                    if not username:
+                        username = self._extract_username_from_uri(uri)
+
+                    # Create credential callback
+                    def _auth_callback(credentials, user_data):
+                        """Callback for providing credentials to libvirt."""
+                        for credential in credentials:
+                            if credential[0] == libvirt.VIR_CRED_AUTHNAME:
+                                # Username credential
+                                credential[4] = username if username else ""
+                            elif credential[0] == libvirt.VIR_CRED_PASSPHRASE:
+                                # Password credential
+                                credential[4] = password
+                            elif credential[0] == libvirt.VIR_CRED_NOECHOPROMPT:
+                                # Non-echoed password prompt
+                                credential[4] = password
+                            else:
+                                # Unknown credential type
+                                logger.warning(f"Unknown credential type requested: {credential[0]}")
+                                return -1
+                        return 0
+
+                    # Define which credential types we support
+                    auth = [
+                        [
+                            libvirt.VIR_CRED_AUTHNAME,
+                            libvirt.VIR_CRED_PASSPHRASE,
+                            libvirt.VIR_CRED_NOECHOPROMPT
+                        ],
+                        _auth_callback,
+                        None
+                    ]
+
+                    # Open connection with authentication
+                    conn = libvirt.openAuth(uri, auth, 0)
+                else:
+                    # Use standard open for SSH or other auth methods
+                    logger.info(f"Connecting to libvirt host: {uri}")
+                    conn = libvirt.open(uri)
+
                 if conn is None:
                     raise Exception(f"Failed to connect to libvirt URI: {uri}")
-                self.connections[uri] = conn
+
+                self.connections[conn_key] = conn
                 logger.info(f"Connected to libvirt host: {uri}")
             except libvirt.libvirtError as e:
                 logger.error(f"Failed to connect to libvirt: {e}")
                 raise
 
-        return self.connections[uri]
+        return self.connections[conn_key]
 
-    async def test_connection(self, uri: str) -> bool:
-        """Test connection to KVM host."""
+    async def test_connection(
+        self,
+        uri: str,
+        password: Optional[str] = None,
+        username: Optional[str] = None
+    ) -> bool:
+        """
+        Test connection to KVM host.
+
+        Args:
+            uri: libvirt connection URI
+            password: Optional password for SASL/TCP authentication
+            username: Optional username for authentication
+
+        Returns:
+            True if connection successful, False otherwise
+        """
         try:
-            conn = await self._run_in_executor(self._get_connection, uri)
+            # Create a partial function with the password and username
+            def _test_conn():
+                return self._get_connection(uri, password, username)
+
+            conn = await self._run_in_executor(_test_conn)
             # Test by getting hostname
             await self._run_in_executor(conn.getHostname)
             return True

@@ -205,7 +205,7 @@ function showAddKVMHostDialog() {
                 <input type="text" class="form-input" name="uri"
                        placeholder="qemu+ssh://user@host/system" required>
                 <div class="form-help">
-                    Examples: qemu:///system (local), qemu+ssh://user@host/system (SSH)
+                    Examples: qemu:///system (local), qemu+ssh://user@host/system (SSH), qemu+tcp://user@host/system (SASL/TCP with password)
                 </div>
             </div>
             <div class="form-group">
@@ -215,9 +215,42 @@ function showAddKVMHostDialog() {
                 </label>
             </div>
 
-            <!-- SSH Key Configuration -->
+            <!-- Authentication Method Selection -->
             <div style="border-top: 1px solid var(--border-color); margin-top: 1.5rem; padding-top: 1.5rem;">
-                <h4 style="margin-bottom: 0.75rem;">SSH Authentication (Optional)</h4>
+                <h4 style="margin-bottom: 0.75rem;">Authentication Method</h4>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="radio" name="auth_method" value="ssh" checked onchange="toggleAuthMethodFields()">
+                        <span>SSH Key Authentication</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
+                        <input type="radio" name="auth_method" value="password" onchange="toggleAuthMethodFields()">
+                        <span>Password Authentication (SASL/TCP)</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Password Authentication Fields -->
+            <div id="passwordAuthFields" style="display: none; margin-top: 1rem;">
+                <div class="form-group">
+                    <label class="form-label required">Username</label>
+                    <input type="text" class="form-input" name="password_username" placeholder="username">
+                    <div class="form-help">
+                        Username for SASL authentication
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label required">Password</label>
+                    <input type="password" class="form-input" name="password_field" placeholder="Enter password">
+                    <div class="form-help">
+                        Password will be encrypted before storage
+                    </div>
+                </div>
+            </div>
+
+            <!-- SSH Key Configuration -->
+            <div id="sshKeyConfig" style="border-top: 1px solid var(--border-color); margin-top: 1.5rem; padding-top: 1.5rem;">
+                <h4 style="margin-bottom: 0.75rem;">SSH Key Options (Optional)</h4>
                 <div class="form-group">
                     <label style="display: flex; align-items: center; gap: 0.5rem;">
                         <input type="radio" name="ssh_key_option" value="default" checked onchange="toggleSSHKeyFields()">
@@ -283,43 +316,70 @@ function showAddKVMHostDialog() {
 
             const loading = showLoading(modal.overlay);
 
-            // Create the KVM host first
-            const newHost = await api.createKVMHost({
+            // Determine authentication method
+            const authMethod = formData.auth_method || 'ssh';
+            const sshKeyOption = formData.ssh_key_option || 'default';
+
+            // Prepare KVM host data
+            const hostData = {
                 name: formData.name,
                 uri: formData.uri,
-                enabled: formData.enabled
-            });
+                enabled: formData.enabled,
+                auth_type: authMethod
+            };
 
-            // Handle SSH key creation if needed
-            const sshKeyOption = formData.ssh_key_option;
-            if (sshKeyOption === 'upload' && formData.upload_private_key && formData.upload_public_key) {
-                // Upload the SSH key
-                await api.uploadSSHKey(newHost.id, {
-                    key_type: formData.upload_key_type,
-                    private_key: formData.upload_private_key,
-                    public_key: formData.upload_public_key
-                });
-                notify.success('KVM host and SSH key added successfully');
-            } else if (sshKeyOption === 'generate') {
-                // Generate new SSH key
-                const keyParams = {
-                    key_type: formData.generate_key_type
-                };
-                if (formData.generate_key_type === 'rsa') {
-                    keyParams.key_size = parseInt(formData.generate_key_size);
+            // Add password if using password auth
+            if (authMethod === 'password') {
+                if (!formData.password_username || !formData.password_field) {
+                    notify.error('Username and password are required for password authentication');
+                    hideLoading(loading);
+                    return;
                 }
-                const newKey = await api.generateSSHKey(newHost.id, keyParams);
+                hostData.username = formData.password_username;
+                hostData.password = formData.password_field;
+            }
 
-                hideLoading(loading);
-                notify.success('KVM host added and SSH key generated');
-                modal.close();
+            // Skip connection test if we're going to generate an SSH key
+            const skipTest = authMethod === 'ssh' && sshKeyOption === 'generate';
+            hostData.skip_connection_test = skipTest;
 
-                // Show the public key to the user
-                await showPublicKey(newHost.id, newKey.id);
-                renderKVM();
-                return;
+            // Create the KVM host
+            const newHost = await api.createKVMHost(hostData);
+
+            // Handle SSH key creation if needed (only for SSH auth)
+            if (authMethod === 'ssh') {
+                if (sshKeyOption === 'upload' && formData.upload_private_key && formData.upload_public_key) {
+                    // Upload the SSH key
+                    await api.uploadSSHKey(newHost.id, {
+                        key_type: formData.upload_key_type,
+                        private_key: formData.upload_private_key,
+                        public_key: formData.upload_public_key
+                    });
+                    notify.success('KVM host and SSH key added successfully');
+                } else if (sshKeyOption === 'generate') {
+                    // Generate new SSH key
+                    const keyParams = {
+                        key_type: formData.generate_key_type
+                    };
+                    if (formData.generate_key_type === 'rsa') {
+                        keyParams.key_size = parseInt(formData.generate_key_size);
+                    }
+                    const newKey = await api.generateSSHKey(newHost.id, keyParams);
+
+                    hideLoading(loading);
+                    notify.success('KVM host added and SSH key generated');
+                    modal.close();
+
+                    // Show the public key to the user
+                    await showPublicKey(newHost.id, newKey.id);
+                    renderKVM();
+                    return;
+                } else {
+                    notify.success('KVM host added successfully');
+                }
             } else {
-                notify.success('KVM host added successfully');
+                // Password auth
+                notify.success('KVM host added successfully with password authentication');
             }
 
             hideLoading(loading);
@@ -334,6 +394,20 @@ function showAddKVMHostDialog() {
 }
 
 // Helper functions for Add KVM Host dialog
+function toggleAuthMethodFields() {
+    const method = document.querySelector('input[name="auth_method"]:checked').value;
+    const passwordFields = document.getElementById('passwordAuthFields');
+    const sshKeyConfig = document.getElementById('sshKeyConfig');
+
+    if (method === 'password') {
+        passwordFields.style.display = 'block';
+        sshKeyConfig.style.display = 'none';
+    } else {
+        passwordFields.style.display = 'none';
+        sshKeyConfig.style.display = 'block';
+    }
+}
+
 function toggleSSHKeyFields() {
     const option = document.querySelector('input[name="ssh_key_option"]:checked').value;
     document.getElementById('uploadSSHKeyFields').style.display = option === 'upload' ? 'block' : 'none';

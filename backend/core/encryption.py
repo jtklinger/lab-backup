@@ -434,3 +434,37 @@ def decrypt_ssh_private_key(encrypted_key: str, secret_key: str) -> str:
     """
     decryptor = SSHKeyEncryption(secret_key)
     return decryptor.decrypt_private_key(encrypted_key)
+
+
+# Password Encryption Utilities (reuse SSH key encryption)
+
+def encrypt_password(password: str, secret_key: str) -> str:
+    """
+    Encrypt a password using the application secret.
+
+    Uses the same encryption method as SSH keys for consistency.
+
+    Args:
+        password: Plain text password
+        secret_key: Application SECRET_KEY
+
+    Returns:
+        Encrypted password as base64 string
+    """
+    encryptor = SSHKeyEncryption(secret_key)
+    return encryptor.encrypt_private_key(password)
+
+
+def decrypt_password(encrypted_password: str, secret_key: str) -> str:
+    """
+    Decrypt a password using the application secret.
+
+    Args:
+        encrypted_password: Encrypted password as base64 string
+        secret_key: Application SECRET_KEY
+
+    Returns:
+        Decrypted plain text password
+    """
+    decryptor = SSHKeyEncryption(secret_key)
+    return decryptor.decrypt_private_key(encrypted_password)
