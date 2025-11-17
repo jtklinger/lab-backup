@@ -51,6 +51,10 @@ celery_app.conf.beat_schedule = {
         "task": "backend.worker.check_scheduled_backups",
         "schedule": crontab(minute="*/5"),  # Every 5 minutes
     },
+    "backup-database": {
+        "task": "backend.worker.backup_database",
+        "schedule": crontab(hour="1", minute="0"),  # Daily at 1 AM
+    },
     "apply-retention-policies": {
         "task": "backend.worker.apply_retention_policies",
         "schedule": crontab(hour="2", minute="0"),  # Daily at 2 AM
@@ -967,3 +971,184 @@ async def _cleanup_logs_async():
     except Exception as e:
         print(f"Error during log cleanup: {e}")
         return {"error": str(e)}
+
+
+@celery_app.task(name="backend.worker.backup_database")
+def backup_database():
+    """
+    Backup PostgreSQL database to configured storage backends.
+
+    This critical task creates a complete backup of the PostgreSQL database
+    including all tables, data, and encryption key metadata. The backup is
+    compressed, optionally encrypted, and uploaded to all configured storage backends.
+    """
+    import asyncio
+    return asyncio.run(_backup_database_async())
+
+
+async def _backup_database_async():
+    """Async implementation of database backup."""
+    import subprocess
+    import os
+    from urllib.parse import urlparse
+    from backend.core.encryption import encrypt_backup
+
+    logger.info("Starting database backup task")
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # Parse database URL to get connection details
+            db_url = str(settings.DATABASE_URL)
+            parsed = urlparse(db_url)
+
+            # Extract connection info
+            db_host = parsed.hostname or "postgres"
+            db_port = parsed.port or 5432
+            db_user = parsed.username or "labbackup"
+            db_name = parsed.path.lstrip('/') or "lab_backup"
+            db_password = parsed.password
+
+            # Create temporary directory for backup
+            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f"database-backup-{timestamp}.sql.gz"
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                backup_file = temp_path / backup_filename
+
+                logger.info(f"Creating database backup: {backup_filename}")
+
+                # Set password environment variable for pg_dump
+                env = os.environ.copy()
+                if db_password:
+                    env['PGPASSWORD'] = db_password
+
+                # Execute pg_dump with compression
+                # Using custom format (-Fc) for flexibility and compression
+                dump_cmd = [
+                    "pg_dump",
+                    "-h", db_host,
+                    "-p", str(db_port),
+                    "-U", db_user,
+                    "-d", db_name,
+                    "-Fc",  # Custom format (compressed)
+                    "-f", str(backup_file)
+                ]
+
+                result = subprocess.run(
+                    dump_cmd,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=1800  # 30 minute timeout
+                )
+
+                if result.returncode != 0:
+                    error_msg = result.stderr or "Unknown error during pg_dump"
+                    logger.error(f"Database backup failed: {error_msg}")
+                    return {"success": False, "error": error_msg}
+
+                backup_size = backup_file.stat().st_size
+                logger.info(f"Database backup created: {backup_size} bytes")
+
+                # Encrypt backup if encryption is enabled
+                file_to_upload = backup_file
+                encrypted = False
+
+                if settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+                    logger.info("Encrypting database backup...")
+                    encrypted_file = temp_path / f"{backup_filename}.encrypted"
+
+                    encryption_result = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: encrypt_backup(
+                            backup_file,
+                            encrypted_file,
+                            settings.ENCRYPTION_KEY,
+                            use_chunked=False  # Database backups typically < 1GB
+                        )
+                    )
+
+                    file_to_upload = encrypted_file
+                    encrypted = True
+                    logger.info(f"Database backup encrypted: {encryption_result['encrypted_size']} bytes")
+
+                # Get all enabled storage backends
+                from backend.models.storage import StorageBackend as StorageBackendModel
+
+                stmt = select(StorageBackendModel).where(StorageBackendModel.enabled == True)
+                result = await db.execute(stmt)
+                backends = result.scalars().all()
+
+                if not backends:
+                    logger.warning("No enabled storage backends found - database backup not uploaded")
+                    return {
+                        "success": True,
+                        "warning": "No storage backends available",
+                        "size": backup_size
+                    }
+
+                # Upload to all storage backends
+                upload_results = []
+
+                for backend_model in backends:
+                    try:
+                        logger.info(f"Uploading database backup to storage backend: {backend_model.name}")
+
+                        storage = create_storage_backend(
+                            backend_model.type,
+                            backend_model.config
+                        )
+
+                        # Use dedicated path for database backups
+                        storage_path = f"database-backups/{file_to_upload.name}"
+
+                        upload_result = await storage.upload(
+                            source_path=file_to_upload,
+                            destination_path=storage_path,
+                            metadata={
+                                "backup_type": "database",
+                                "timestamp": timestamp,
+                                "encrypted": encrypted,
+                                "database": db_name,
+                                "compression": "pg_dump_custom"
+                            }
+                        )
+
+                        upload_results.append({
+                            "backend": backend_model.name,
+                            "success": True,
+                            "path": storage_path,
+                            "size": upload_result.get("size", 0)
+                        })
+
+                        logger.info(f"Database backup uploaded to {backend_model.name}: {storage_path}")
+
+                    except Exception as e:
+                        logger.error(f"Failed to upload database backup to {backend_model.name}: {e}")
+                        upload_results.append({
+                            "backend": backend_model.name,
+                            "success": False,
+                            "error": str(e)
+                        })
+
+                # Return summary
+                successful_uploads = sum(1 for r in upload_results if r.get("success"))
+
+                return {
+                    "success": True,
+                    "timestamp": timestamp,
+                    "backup_file": backup_filename,
+                    "size": backup_size,
+                    "encrypted": encrypted,
+                    "storage_backends": len(backends),
+                    "successful_uploads": successful_uploads,
+                    "upload_results": upload_results
+                }
+
+        except subprocess.TimeoutExpired:
+            logger.error("Database backup timed out after 30 minutes")
+            return {"success": False, "error": "Backup timeout"}
+        except Exception as e:
+            logger.error(f"Database backup failed: {e}")
+            return {"success": False, "error": str(e)}
