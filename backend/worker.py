@@ -2,6 +2,7 @@
 Celery worker configuration and tasks.
 """
 import asyncio
+import logging
 import tempfile
 from pathlib import Path
 from datetime import datetime
@@ -27,6 +28,9 @@ from backend.services.kvm.backup import KVMBackupService
 from backend.services.podman.backup import PodmanBackupService
 from backend.services.storage import create_storage_backend
 from backend.services.retention.policy import RetentionPolicy
+from backend.services.verification import RecoveryTestService
+
+logger = logging.getLogger(__name__)
 
 # Initialize Celery
 celery_app = Celery(
@@ -70,6 +74,10 @@ celery_app.conf.beat_schedule = {
     "update-storage-usage": {
         "task": "backend.worker.update_storage_usage",
         "schedule": crontab(hour="*/6", minute="0"),  # Every 6 hours
+    },
+    "weekly-backup-verification": {
+        "task": "backend.worker.verify_recent_backups",
+        "schedule": crontab(day_of_week="0", hour="5", minute="0"),  # Every Sunday at 5 AM
     },
 }
 
@@ -1151,4 +1159,283 @@ async def _backup_database_async():
             return {"success": False, "error": "Backup timeout"}
         except Exception as e:
             logger.error(f"Database backup failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+@celery_app.task(name="backend.worker.verify_backup")
+def verify_backup(backup_id: int):
+    """
+    Verify a backup by restoring it to an isolated test pod.
+
+    This task downloads the backup from storage, spins up an isolated
+    PostgreSQL container, restores the backup, verifies the restoration,
+    and tears down the test environment automatically.
+
+    Args:
+        backup_id: ID of the backup to verify
+
+    Returns:
+        Dict with verification results
+    """
+    import asyncio
+    return asyncio.run(_verify_backup_async(backup_id))
+
+
+async def _verify_backup_async(backup_id: int):
+    """Async implementation of backup verification."""
+    from backend.models.storage import StorageBackend as StorageBackendModel
+
+    logger.info(f"Starting backup verification for backup ID: {backup_id}")
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # Get backup record
+            backup = await db.get(Backup, backup_id)
+            if not backup:
+                logger.error(f"Backup not found: {backup_id}")
+                return {"success": False, "error": "Backup not found"}
+
+            # Create verification job
+            job = Job(
+                type=JobType.VERIFICATION,
+                status=JobStatus.RUNNING,
+                backup_id=backup_id,
+                started_at=datetime.utcnow(),
+                job_metadata={
+                    "backup_id": backup_id,
+                    "source_name": backup.source_name,
+                    "backup_type": backup.backup_type.value
+                }
+            )
+            db.add(job)
+            await db.commit()
+            await db.refresh(job)
+
+            logger.info(f"Created verification job ID: {job.id}")
+
+            # Get storage backend
+            storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
+            if not storage_backend_model:
+                error_msg = "Storage backend not found"
+                logger.error(error_msg)
+
+                job.status = JobStatus.FAILED
+                job.completed_at = datetime.utcnow()
+                job.error_message = error_msg
+                await db.commit()
+
+                return {"success": False, "error": error_msg}
+
+            # Download backup from storage
+            logger.info(f"Downloading backup from storage: {backup.storage_path}")
+
+            storage = create_storage_backend(
+                storage_backend_model.type,
+                storage_backend_model.config
+            )
+
+            # Create temporary directory for download
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                backup_filename = Path(backup.storage_path).name
+                download_path = temp_path / backup_filename
+
+                await storage.download(
+                    source_path=backup.storage_path,
+                    destination_path=download_path
+                )
+
+                logger.info(f"Backup downloaded to: {download_path}")
+
+                # Check if backup is encrypted
+                encrypted = download_path.name.endswith('.encrypted')
+
+                # Create recovery test service
+                recovery_service = RecoveryTestService(job_id=job.id)
+
+                # Verify backup
+                logger.info("Starting test pod verification...")
+                verification_result = await recovery_service.verify_backup(
+                    backup_file=download_path,
+                    encrypted=encrypted
+                )
+
+                # Update backup record with verification results
+                backup.verified = verification_result['success']
+                backup.verification_date = datetime.utcnow()
+                backup.verification_status = 'passed' if verification_result['success'] else 'failed'
+                backup.verification_error = verification_result.get('error')
+                backup.verification_job_id = job.id
+                backup.verified_table_count = verification_result.get('table_count')
+                backup.verified_size_bytes = verification_result.get('size_bytes')
+                backup.verification_duration_seconds = verification_result.get('duration_seconds')
+
+                # Update job status
+                job.status = JobStatus.COMPLETED if verification_result['success'] else JobStatus.FAILED
+                job.completed_at = datetime.utcnow()
+                job.error_message = verification_result.get('error')
+                job.job_metadata.update({
+                    "verification_result": verification_result
+                })
+
+                await db.commit()
+
+                logger.info(f"Backup verification completed: {verification_result['success']}")
+
+                # Send email notification
+                try:
+                    from backend.services.email import VerificationEmailService
+                    email_service = VerificationEmailService()
+                    await email_service.send_verification_report(
+                        backup_id=backup_id,
+                        backup_name=Path(backup.storage_path).name if backup.storage_path else f"backup-{backup_id}",
+                        source_name=backup.source_name,
+                        backup_date=backup.created_at,
+                        verification_success=verification_result['success'],
+                        table_count=verification_result.get('table_count'),
+                        size_bytes=verification_result.get('size_bytes'),
+                        duration_seconds=verification_result.get('duration_seconds'),
+                        error_message=verification_result.get('error')
+                    )
+                    logger.info("Verification email report sent")
+                except Exception as email_error:
+                    logger.error(f"Failed to send verification email: {email_error}", exc_info=True)
+
+                return {
+                    "success": verification_result['success'],
+                    "job_id": job.id,
+                    "backup_id": backup_id,
+                    **verification_result
+                }
+
+        except Exception as e:
+            logger.error(f"Backup verification failed: {e}", exc_info=True)
+
+            # Update job if it exists
+            error_message = str(e)
+            try:
+                if 'job' in locals():
+                    job.status = JobStatus.FAILED
+                    job.completed_at = datetime.utcnow()
+                    job.error_message = error_message
+                    await db.commit()
+            except:
+                pass
+
+            # Send failure email notification
+            try:
+                if 'backup' in locals():
+                    from backend.services.email import VerificationEmailService
+                    email_service = VerificationEmailService()
+                    await email_service.send_verification_report(
+                        backup_id=backup_id,
+                        backup_name=Path(backup.storage_path).name if backup.storage_path else f"backup-{backup_id}",
+                        source_name=backup.source_name if backup else "Unknown",
+                        backup_date=backup.created_at if backup else datetime.utcnow(),
+                        verification_success=False,
+                        error_message=error_message
+                    )
+                    logger.info("Verification failure email sent")
+            except Exception as email_error:
+                logger.error(f"Failed to send failure email: {email_error}")
+
+            return {"success": False, "error": error_message}
+
+
+@celery_app.task(name="backend.worker.verify_recent_backups")
+def verify_recent_backups():
+    """
+    Scheduled task to verify the most recent backup for each source.
+
+    This task runs weekly (Sunday at 5 AM) and automatically verifies
+    the most recent completed backup for each VM and container.
+
+    Returns:
+        Dict with summary of verification tasks queued
+    """
+    import asyncio
+    return asyncio.run(_verify_recent_backups_async())
+
+
+async def _verify_recent_backups_async():
+    """Async implementation of recent backups verification."""
+    logger.info("Starting weekly backup verification task")
+
+    async with AsyncSessionLocal() as db:
+        try:
+            # Get the most recent completed backup for each unique source
+            # Using a subquery to find the max ID for each (source_type, source_id) pair
+            from sqlalchemy import func
+
+            subq = (
+                select(
+                    Backup.source_type,
+                    Backup.source_id,
+                    func.max(Backup.id).label('max_id')
+                )
+                .where(Backup.status == BackupStatus.COMPLETED)
+                .group_by(Backup.source_type, Backup.source_id)
+                .subquery()
+            )
+
+            stmt = (
+                select(Backup)
+                .join(
+                    subq,
+                    and_(
+                        Backup.source_type == subq.c.source_type,
+                        Backup.source_id == subq.c.source_id,
+                        Backup.id == subq.c.max_id
+                    )
+                )
+                .order_by(Backup.source_name)
+            )
+
+            result = await db.execute(stmt)
+            recent_backups = result.scalars().all()
+
+            if not recent_backups:
+                logger.info("No completed backups found for verification")
+                return {
+                    "success": True,
+                    "message": "No backups to verify",
+                    "queued_count": 0
+                }
+
+            logger.info(f"Found {len(recent_backups)} backups to verify")
+
+            # Queue verification for each backup
+            queued = []
+            for backup in recent_backups:
+                try:
+                    # Skip if already verified recently (within last 7 days)
+                    if backup.verified and backup.verification_date:
+                        days_since_verification = (datetime.utcnow() - backup.verification_date).days
+                        if days_since_verification < 7:
+                            logger.info(f"Skipping backup {backup.id} ({backup.source_name}) - verified {days_since_verification} days ago")
+                            continue
+
+                    # Queue verification task
+                    task = verify_backup.delay(backup.id)
+                    queued.append({
+                        "backup_id": backup.id,
+                        "source_name": backup.source_name,
+                        "task_id": task.id
+                    })
+                    logger.info(f"Queued verification for backup {backup.id} ({backup.source_name})")
+
+                except Exception as e:
+                    logger.error(f"Failed to queue verification for backup {backup.id}: {e}")
+
+            logger.info(f"Successfully queued {len(queued)} backup verifications")
+
+            return {
+                "success": True,
+                "message": f"Queued {len(queued)} backups for verification",
+                "queued_count": len(queued),
+                "queued_backups": queued
+            }
+
+        except Exception as e:
+            logger.error(f"Weekly backup verification task failed: {e}", exc_info=True)
             return {"success": False, "error": str(e)}

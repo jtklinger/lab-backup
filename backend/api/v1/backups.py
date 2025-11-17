@@ -33,6 +33,14 @@ class BackupResponse(BaseModel):
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
     expires_at: Optional[datetime]
+    # Verification fields (Issue #6)
+    verified: bool = False
+    verification_date: Optional[datetime] = None
+    verification_status: Optional[str] = None
+    verification_error: Optional[str] = None
+    verified_table_count: Optional[int] = None
+    verified_size_bytes: Optional[int] = None
+    verification_duration_seconds: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -327,4 +335,56 @@ async def restore_backup(
         "job_id": job.id,
         "backup_id": backup_id,
         "task_id": task.id
+    }
+
+
+@router.post("/{backup_id}/verify", status_code=status.HTTP_202_ACCEPTED)
+async def verify_backup_endpoint(
+    backup_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """
+    Verify a backup by restoring it to an isolated test pod.
+
+    This endpoint triggers automated backup verification using a temporary
+    PostgreSQL container. The verification process:
+    1. Downloads the backup from storage
+    2. Spins up an isolated test pod
+    3. Restores the backup to the test database
+    4. Validates the restoration (table count, database size, integrity)
+    5. Tears down the test environment
+    6. Updates the backup record with verification results
+
+    The verification job is processed asynchronously. You can monitor
+    progress via the /jobs endpoint.
+
+    Returns:
+        Job details including job_id and task_id for tracking
+    """
+    backup = await db.get(Backup, backup_id)
+    if not backup:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Backup not found"
+        )
+
+    if backup.status != BackupStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot verify backup with status: {backup.status}. Only completed backups can be verified."
+        )
+
+    # Queue verification job via Celery
+    from backend.worker import verify_backup
+    task = verify_backup.delay(backup_id)
+
+    # Job will be created by the worker task itself
+    # Return immediately with task info
+
+    return {
+        "message": "Backup verification job queued successfully",
+        "backup_id": backup_id,
+        "task_id": task.id,
+        "status": "Verification in progress - check backup verification_status for results"
     }

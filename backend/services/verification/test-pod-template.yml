@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: lab-backup-verify-${JOB_ID}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      # Use tmpfs for faster performance and automatic cleanup
+      - type: tmpfs
+        target: /var/lib/postgresql/data
+        tmpfs:
+          size: 2G
+      # Mount backup file for restoration
+      - ${BACKUP_FILE_PATH}:/backup/restore.sql.gz:ro
+    networks:
+      - verify-net-${JOB_ID}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    shm_size: 128mb
+    mem_limit: 2G
+    cpus: 2
+    restart: "no"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "1"
+
+networks:
+  verify-net-${JOB_ID}:
+    driver: bridge
+    internal: true  # No external network access

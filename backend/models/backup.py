@@ -149,6 +149,20 @@ class Backup(Base):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     backup_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
 
+    # Verification tracking (Issue #6)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    verification_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    verification_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    verification_job_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True
+    )
+    verified_table_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    verified_size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    verification_duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # Relationships
     schedule: Mapped[Optional["BackupSchedule"]] = relationship(back_populates="backups")
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backups")
@@ -173,6 +187,7 @@ class JobType(str, enum.Enum):
     """Job types."""
     BACKUP = "backup"
     RESTORE = "restore"
+    VERIFICATION = "verification"
     CLEANUP = "cleanup"
     SYNC = "sync"
 
