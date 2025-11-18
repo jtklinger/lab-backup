@@ -11,13 +11,31 @@ import asyncio
 
 from backend.core.config import settings
 from backend.core.logging_handler import setup_logging, setup_database_logging, setup_file_logging
-from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api, compliance
+from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api, compliance, audit
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+
+    # Setup SIEM integration (Issue #9)
+    try:
+        from backend.services.siem_integration import configure_siem_integration, SyslogConfig
+        siem_config = SyslogConfig(
+            enabled=settings.SIEM_ENABLED,
+            host=settings.SIEM_HOST or "localhost",
+            port=settings.SIEM_PORT,
+            protocol=settings.SIEM_PROTOCOL,
+            format=settings.SIEM_FORMAT,
+            facility=settings.SIEM_FACILITY,
+            app_name=settings.APP_NAME
+        )
+        configure_siem_integration(siem_config)
+        if settings.SIEM_ENABLED:
+            print(f"🔐 SIEM integration enabled: {settings.SIEM_FORMAT.upper()} to {settings.SIEM_HOST}:{settings.SIEM_PORT}")
+    except Exception as e:
+        print(f"⚠️  Failed to setup SIEM integration: {e}")
 
     # Setup database logging (uses dedicated connection pool to avoid concurrency issues)
     try:
@@ -64,6 +82,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add audit logging middleware (Issue #9)
+from backend.middleware.audit_middleware import AuditLoggingMiddleware
+app.add_middleware(AuditLoggingMiddleware)
+
 # Mount static files
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
@@ -80,6 +102,7 @@ app.include_router(backups.router, prefix=f"{settings.API_V1_PREFIX}/backups", t
 app.include_router(jobs.router, prefix=f"{settings.API_V1_PREFIX}/jobs", tags=["Jobs"])
 app.include_router(logs.router, prefix=f"{settings.API_V1_PREFIX}/logs", tags=["Logs"])
 app.include_router(compliance.router, prefix=f"{settings.API_V1_PREFIX}/compliance", tags=["Compliance"])
+app.include_router(audit.router, prefix=f"{settings.API_V1_PREFIX}/audit", tags=["Audit"])
 
 
 @app.get("/")

@@ -2,7 +2,7 @@
 Authentication API endpoints.
 """
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,7 @@ from backend.core.security import (
     decode_token
 )
 from backend.core.config import settings
+from backend.services.audit_logger import AuditLogger
 
 router = APIRouter()
 
@@ -54,15 +55,30 @@ class UserResponse(BaseModel):
 
 async def _authenticate_user(
     form_data: OAuth2PasswordRequestForm,
-    db: AsyncSession
+    db: AsyncSession,
+    request: Request
 ):
     """Helper function to authenticate user."""
+    audit_logger = AuditLogger(db)
+    ip_address = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent")
+
     # Get user by username
     stmt = select(User).where(User.username == form_data.username)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
     if not user or not verify_password(form_data.password, user.password_hash):
+        # Log failed login attempt (Issue #9)
+        await audit_logger.log_authentication(
+            action="LOGIN",
+            username=form_data.username,
+            success=False,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={"reason": "incorrect_credentials"}
+        )
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -70,6 +86,16 @@ async def _authenticate_user(
         )
 
     if not user.is_active:
+        # Log failed login attempt for inactive user (Issue #9)
+        await audit_logger.log_authentication(
+            action="LOGIN",
+            username=form_data.username,
+            success=False,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details={"reason": "inactive_user"}
+        )
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Inactive user",
@@ -78,6 +104,16 @@ async def _authenticate_user(
     # Update last login
     user.last_login = datetime.utcnow()
     await db.commit()
+
+    # Log successful login (Issue #9)
+    await audit_logger.log_authentication(
+        action="LOGIN",
+        username=user.username,
+        success=True,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details={"user_id": user.id}
+    )
 
     # Create tokens
     access_token = create_access_token(data={"sub": user.username})
@@ -92,28 +128,34 @@ async def _authenticate_user(
 
 @router.post("/token", response_model=Token)
 async def token(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
     """OAuth2 compatible token endpoint."""
-    return await _authenticate_user(form_data, db)
+    return await _authenticate_user(form_data, db, request)
 
 
 @router.post("/login", response_model=Token)
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
     """Authenticate user and return JWT tokens."""
-    return await _authenticate_user(form_data, db)
+    return await _authenticate_user(form_data, db, request)
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def register(
+    request: Request,
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db)
 ):
     """Register a new user."""
+    audit_logger = AuditLogger(db)
+    ip_address = request.client.host if request.client else "unknown"
+
     # Check if username exists
     stmt = select(User).where(User.username == user_data.username)
     result = await db.execute(stmt)
@@ -145,6 +187,16 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
+    # Log user registration (Issue #9)
+    await audit_logger.log_configuration_change(
+        action="CREATE",
+        user_id=user.id,
+        resource_type="USER",
+        resource_id=user.id,
+        new_value={"username": user.username, "email": user.email, "role": user.role.value},
+        ip_address=ip_address
+    )
+
     return user
 
 
@@ -155,8 +207,26 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/logout")
-async def logout(current_user: User = Depends(get_current_user)):
+async def logout(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Logout user (client should discard tokens)."""
+    audit_logger = AuditLogger(db)
+    ip_address = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent")
+
+    # Log logout (Issue #9)
+    await audit_logger.log_authentication(
+        action="LOGOUT",
+        username=current_user.username,
+        success=True,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details={"user_id": current_user.id}
+    )
+
     return {"message": "Successfully logged out"}
 
 

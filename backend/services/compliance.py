@@ -16,7 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.infrastructure import VM, Container
 from backend.models.backup import BackupSchedule, Backup, BackupStatus, SourceType
-from backend.core.logging import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ComplianceStatus:

@@ -206,7 +206,12 @@ class Backup(Base):
     )
     job: Mapped[Optional["Job"]] = relationship(
         back_populates="backup",
+        foreign_keys="[Job.backup_id]",
         uselist=False
+    )
+    verification_job: Mapped[Optional["Job"]] = relationship(
+        foreign_keys=[verification_job_id],
+        viewonly=True
     )
 
 
@@ -256,7 +261,10 @@ class Job(Base):
     celery_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
 
     # Relationships
-    backup: Mapped[Optional["Backup"]] = relationship(back_populates="job")
+    backup: Mapped[Optional["Backup"]] = relationship(
+        back_populates="job",
+        foreign_keys=[backup_id]
+    )
     logs: Mapped[list["JobLog"]] = relationship(
         back_populates="job",
         cascade="all, delete-orphan"

@@ -72,9 +72,14 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "info"  # lowercase for uvicorn compatibility
     LOG_FORMAT: str = "json"  # json or text
     LOG_FILE: Optional[str] = "/var/log/lab-backup/app.log"
-    SYSLOG_ENABLED: bool = False
-    SYSLOG_HOST: Optional[str] = None
-    SYSLOG_PORT: int = 514
+
+    # SIEM Integration (Issue #9)
+    SIEM_ENABLED: bool = False
+    SIEM_HOST: Optional[str] = None
+    SIEM_PORT: int = 514
+    SIEM_PROTOCOL: str = "udp"  # udp or tcp
+    SIEM_FORMAT: str = "rfc5424"  # rfc5424 or cef
+    SIEM_FACILITY: int = 16  # local0
 
     # Monitoring
     METRICS_ENABLED: bool = True

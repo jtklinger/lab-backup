@@ -63,7 +63,7 @@ class APIToken(Base):
 
 
 class AuditLog(Base):
-    """Audit log for tracking user actions."""
+    """Audit log for tracking user actions and API requests."""
 
     __tablename__ = "audit_logs"
 
@@ -74,6 +74,37 @@ class AuditLog(Base):
     details: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     user_agent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # API request logging fields (Issue #9)
+    request_method: Mapped[Optional[str]] = mapped_column(
+        String(10),
+        nullable=True,
+        comment='HTTP method (GET, POST, PUT, DELETE, etc.)'
+    )
+    request_path: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment='API endpoint path'
+    )
+    request_data: Mapped[Optional[dict]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment='Sanitized request body/query parameters'
+    )
+    response_status: Mapped[Optional[int]] = mapped_column(
+        nullable=True,
+        comment='HTTP response status code'
+    )
+    duration_ms: Mapped[Optional[float]] = mapped_column(
+        nullable=True,
+        comment='Request processing duration in milliseconds'
+    )
+    severity: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        default='INFO',
+        comment='Log severity (DEBUG, INFO, WARNING, ERROR, CRITICAL)'
+    )
 
     # Relationships
     user: Mapped[Optional["User"]] = relationship(back_populates="audit_logs")
