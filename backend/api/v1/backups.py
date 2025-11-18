@@ -41,6 +41,13 @@ class BackupResponse(BaseModel):
     verified_table_count: Optional[int] = None
     verified_size_bytes: Optional[int] = None
     verification_duration_seconds: Optional[int] = None
+    # Chain tracking fields (Issue #10)
+    chain_id: Optional[str] = None
+    sequence_number: Optional[int] = None
+    original_size: Optional[int] = None
+    dedupe_ratio: Optional[float] = None
+    compression_ratio: Optional[float] = None
+    space_saved_bytes: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -387,4 +394,140 @@ async def verify_backup_endpoint(
         "backup_id": backup_id,
         "task_id": task.id,
         "status": "Verification in progress - check backup verification_status for results"
+    }
+
+
+# ============================================================================
+# Backup Chain Management Endpoints (Issue #10)
+# ============================================================================
+
+@router.get("/chains/{chain_id}")
+async def get_backup_chain(
+    chain_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get all backups in a chain, ordered by sequence.
+
+    Returns the full backup chain including:
+    - Full backup (sequence 0)
+    - All incremental backups in order
+    - Deduplication and compression metrics
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    backups = await chain_service.get_backup_chain(chain_id)
+
+    if not backups:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chain {chain_id} not found"
+        )
+
+    return {
+        "chain_id": chain_id,
+        "backup_count": len(backups),
+        "backups": [BackupResponse.from_orm(b) for b in backups]
+    }
+
+
+@router.get("/chains/{chain_id}/statistics")
+async def get_chain_statistics(
+    chain_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get detailed statistics for a backup chain.
+
+    Includes:
+    - Total storage metrics (original, compressed, saved)
+    - Average deduplication and compression ratios
+    - Per-backup details with sequence information
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    stats = await chain_service.get_chain_statistics(chain_id)
+
+    if "error" in stats:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=stats["error"]
+        )
+
+    return stats
+
+
+@router.get("/orphaned")
+async def get_orphaned_backups(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN))
+):
+    """
+    Find orphaned backups (parent was deleted).
+
+    Admin-only endpoint to identify backups whose parent_backup_id
+    references a non-existent backup. These should be investigated
+    and potentially cleaned up.
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    orphaned = await chain_service.find_orphaned_backups()
+
+    return {
+        "orphaned_count": len(orphaned),
+        "backups": [BackupResponse.from_orm(b) for b in orphaned]
+    }
+
+
+@router.get("/statistics/global")
+async def get_global_backup_statistics(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get global backup storage statistics.
+
+    Provides system-wide metrics:
+    - Total backups and chains
+    - Total storage (original vs compressed)
+    - Total space saved from dedup + compression
+    - Average efficiency ratios
+    - Overall storage efficiency percentage
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    stats = await chain_service.get_global_statistics()
+
+    return stats
+
+
+@router.delete("/{backup_id}/check")
+async def check_backup_deletion(
+    backup_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """
+    Check if a backup can be safely deleted.
+
+    Returns whether the backup has dependent incremental backups
+    that would be orphaned if this backup is deleted.
+
+    This is a read-only check - it does not delete anything.
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    can_delete, reason = await chain_service.can_delete_backup(backup_id)
+
+    return {
+        "backup_id": backup_id,
+        "can_delete": can_delete,
+        "reason": reason
     }

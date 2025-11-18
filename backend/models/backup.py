@@ -3,7 +3,7 @@ Backup schedule and backup models.
 """
 from datetime import datetime
 from typing import Optional, Dict, Any
-from sqlalchemy import String, Integer, BigInteger, Boolean, JSON, ForeignKey, DateTime, Enum as SQLEnum, Text
+from sqlalchemy import String, Integer, BigInteger, Boolean, JSON, ForeignKey, DateTime, Enum as SQLEnum, Text, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
 
@@ -188,6 +188,42 @@ class Backup(Base):
         default="GLOBAL",
         index=True,
         comment="GLOBAL, STORAGE, VM, or CONTAINER"
+    )
+
+    # Backup chain tracking (Issue #10)
+    chain_id: Mapped[Optional[str]] = mapped_column(
+        String(36),  # UUID as string
+        nullable=True,
+        index=True,
+        comment="UUID grouping related backups (full + incrementals)"
+    )
+    sequence_number: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        index=True,
+        comment="Position in backup chain (0=first backup, increments for each subsequent)"
+    )
+
+    # Deduplication and compression metrics (Issue #10)
+    original_size: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True,
+        comment="Original size in bytes before dedup/compression"
+    )
+    dedupe_ratio: Mapped[Optional[float]] = mapped_column(
+        Float,
+        nullable=True,
+        comment="Deduplication ratio (original_size / deduplicated_size). Higher is better."
+    )
+    compression_ratio: Mapped[Optional[float]] = mapped_column(
+        Float,
+        nullable=True,
+        comment="Compression ratio (deduplicated_size / compressed_size). Higher is better."
+    )
+    space_saved_bytes: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True,
+        comment="Total space saved vs full backup (original_size - compressed_size)"
     )
 
     # Relationships

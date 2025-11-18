@@ -204,6 +204,23 @@ async def _execute_backup_async(schedule_id: Optional[int], backup_id: int):
                 backup.storage_path = result.get("storage_path")
                 backup.checksum = result.get("checksum")
 
+                # Initialize backup chain tracking (Issue #10)
+                try:
+                    from backend.services.backup_chain import BackupChainService
+                    chain_service = BackupChainService(db)
+                    await chain_service.initialize_backup_chain(
+                        backup=backup,
+                        backup_mode=backup.backup_mode,
+                        original_size=result.get("original_size"),
+                        deduplicated_size=result.get("deduplicated_size")
+                    )
+                    logger.info(
+                        f"Initialized backup chain for backup {backup.id}: "
+                        f"chain_id={backup.chain_id}, sequence={backup.sequence_number}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to initialize backup chain: {e}")
+
                 # Update job
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.utcnow()
