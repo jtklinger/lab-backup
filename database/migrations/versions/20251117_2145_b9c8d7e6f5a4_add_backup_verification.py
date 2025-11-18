@@ -25,8 +25,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Add VERIFICATION to job_type enum
-    op.execute("ALTER TYPE job_type ADD VALUE IF NOT EXISTS 'verification'")
+    # Add VERIFICATION to jobtype enum
+    op.execute("ALTER TYPE jobtype ADD VALUE IF NOT EXISTS 'verification'")
 
     # Add verification tracking columns to backups table
     op.add_column('backups', sa.Column('verified', sa.Boolean(), nullable=False, server_default='false'))

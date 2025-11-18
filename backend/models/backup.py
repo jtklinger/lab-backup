@@ -70,6 +70,18 @@ class BackupSchedule(Base):
     next_run: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     schedule_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
 
+    # Compliance tracking (Issue #8)
+    rpo_minutes: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment='Recovery Point Objective in minutes'
+    )
+    rto_minutes: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment='Recovery Time Objective in minutes'
+    )
+
     # Relationships
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backup_schedules")
     vm: Mapped[Optional["VM"]] = relationship(

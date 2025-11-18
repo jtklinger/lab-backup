@@ -81,6 +81,31 @@ class VM(Base):
     state: Mapped[str] = mapped_column(String(50), nullable=True)
     vm_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
 
+    # Compliance tracking (Issue #8)
+    compliance_status: Mapped[Optional[str]] = mapped_column(
+        String(10),
+        nullable=True,
+        default='GREY',
+        index=True,
+        comment='GREEN/YELLOW/RED/GREY'
+    )
+    compliance_reason: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment='Human-readable compliance status reason'
+    )
+    last_successful_backup: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+        comment='Timestamp of last completed backup'
+    )
+    compliance_last_checked: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment='When compliance was last calculated'
+    )
+
     # Relationships
     kvm_host: Mapped["KVMHost"] = relationship(back_populates="vms")
     backup_schedules: Mapped[list["BackupSchedule"]] = relationship(
@@ -124,6 +149,31 @@ class Container(Base):
     image: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     state: Mapped[str] = mapped_column(String(50), nullable=True)
     container_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
+
+    # Compliance tracking (Issue #8)
+    compliance_status: Mapped[Optional[str]] = mapped_column(
+        String(10),
+        nullable=True,
+        default='GREY',
+        index=True,
+        comment='GREEN/YELLOW/RED/GREY'
+    )
+    compliance_reason: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment='Human-readable compliance status reason'
+    )
+    last_successful_backup: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+        comment='Timestamp of last completed backup'
+    )
+    compliance_last_checked: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment='When compliance was last calculated'
+    )
 
     # Relationships
     podman_host: Mapped["PodmanHost"] = relationship(back_populates="containers")

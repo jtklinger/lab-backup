@@ -79,6 +79,14 @@ celery_app.conf.beat_schedule = {
         "task": "backend.worker.verify_recent_backups",
         "schedule": crontab(day_of_week="0", hour="5", minute="0"),  # Every Sunday at 5 AM
     },
+    "calculate-compliance": {
+        "task": "backend.worker.calculate_compliance",
+        "schedule": crontab(minute="0"),  # Every hour on the hour
+    },
+    "send-daily-compliance-summary": {
+        "task": "backend.worker.send_daily_compliance_summary",
+        "schedule": crontab(hour="7", minute="0"),  # Daily at 7 AM
+    },
 }
 
 
@@ -189,7 +197,8 @@ async def _execute_backup_async(schedule_id: Optional[int], backup_id: int):
 
                 # Update backup with results
                 backup.status = BackupStatus.COMPLETED
-                backup.completed_at = datetime.utcnow()
+                completed_time = datetime.utcnow()
+                backup.completed_at = completed_time
                 backup.size = result.get("original_size", 0)
                 backup.compressed_size = result.get("compressed_size", 0)
                 backup.storage_path = result.get("storage_path")
@@ -198,6 +207,18 @@ async def _execute_backup_async(schedule_id: Optional[int], backup_id: int):
                 # Update job
                 job.status = JobStatus.COMPLETED
                 job.completed_at = datetime.utcnow()
+
+                # Update last_successful_backup for compliance tracking (Issue #8)
+                try:
+                    from backend.services.compliance import ComplianceService
+                    compliance_service = ComplianceService(db)
+                    await compliance_service.update_last_successful_backup(
+                        source_type=backup.source_type,
+                        source_id=backup.source_id,
+                        completed_at=completed_time
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to update compliance tracking: {e}")
 
                 # Log completion
                 log = JobLog(
@@ -1438,4 +1459,118 @@ async def _verify_recent_backups_async():
 
         except Exception as e:
             logger.error(f"Weekly backup verification task failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+
+@celery_app.task(name="backend.worker.calculate_compliance")
+def calculate_compliance():
+    """
+    Calculate compliance status for all VMs and containers.
+
+    This task runs hourly and updates the compliance status for all
+    VMs and containers based on their backup schedules and RPO/RTO policies.
+
+    Implements HYCU-style compliance state machine:
+    - GREY: No backup policy assigned
+    - GREEN: Fully compliant (backups within RPO)
+    - YELLOW: Warning state (backup aging, minor issues)
+    - RED: Non-compliant (no backups, RPO exceeded)
+
+    Related: Issue #8 - Build Compliance Tracking System
+
+    Returns:
+        Dict with compliance calculation statistics
+    """
+    import asyncio
+    return asyncio.run(_calculate_compliance_async())
+
+
+async def _calculate_compliance_async():
+    """Async implementation of compliance calculation."""
+    from backend.services.compliance import ComplianceService
+
+    logger.info("Starting compliance calculation task")
+
+    async with AsyncSessionLocal() as db:
+        try:
+            compliance_service = ComplianceService(db)
+
+            # Calculate compliance for all VMs and containers
+            stats = await compliance_service.calculate_all_compliance()
+
+            logger.info(
+                f"Compliance calculation completed - "
+                f"VMs: {stats['vms_updated']}, "
+                f"Containers: {stats['containers_updated']}, "
+                f"Errors: {stats['errors']}"
+            )
+
+            return {
+                "success": True,
+                "timestamp": datetime.utcnow().isoformat(),
+                **stats
+            }
+
+        except Exception as e:
+            logger.error(f"Compliance calculation failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+
+@celery_app.task(name="backend.worker.send_daily_compliance_summary")
+def send_daily_compliance_summary():
+    """
+    Send daily compliance summary email.
+
+    This task runs daily at 7 AM and sends a compliance summary report
+    to configured email recipients. The report includes:
+    - Overall compliance statistics (GREY/GREEN/YELLOW/RED breakdown)
+    - List of all non-compliant (RED) entities
+    - Trending and health percentage
+
+    Related: Issue #8 - Build Compliance Tracking System
+
+    Returns:
+        Dict with email sending status
+    """
+    import asyncio
+    return asyncio.run(_send_daily_compliance_summary_async())
+
+
+async def _send_daily_compliance_summary_async():
+    """Async implementation of daily compliance summary email."""
+    from backend.services.compliance import ComplianceService
+    from backend.services.email import ComplianceEmailService
+
+    logger.info("Starting daily compliance summary email task")
+
+    async with AsyncSessionLocal() as db:
+        try:
+            compliance_service = ComplianceService(db)
+
+            # Get dashboard data
+            dashboard_data = await compliance_service.get_compliance_dashboard()
+
+            # Get non-compliant entities
+            non_compliant_entities = await compliance_service.get_non_compliant_entities()
+
+            # Send email
+            email_service = ComplianceEmailService()
+            await email_service.send_daily_compliance_summary(
+                dashboard_data=dashboard_data,
+                non_compliant_entities=non_compliant_entities
+            )
+
+            logger.info("Daily compliance summary email sent successfully")
+
+            return {
+                "success": True,
+                "timestamp": datetime.utcnow().isoformat(),
+                "total_vms": dashboard_data['vms']['total'],
+                "total_containers": dashboard_data['containers']['total'],
+                "red_vms": dashboard_data['vms']['red'],
+                "red_containers": dashboard_data['containers']['red']
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to send daily compliance summary: {e}", exc_info=True)
             return {"success": False, "error": str(e)}

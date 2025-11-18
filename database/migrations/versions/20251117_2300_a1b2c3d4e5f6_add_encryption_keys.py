@@ -1,6 +1,6 @@
 """add_encryption_keys
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: a8b7c6d5e4f3
 Revises: b9c8d7e6f5a4
 Create Date: 2025-11-17 23:00:00.000000
 
@@ -23,7 +23,7 @@ from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
-revision = 'a1b2c3d4e5f6'
+revision = 'a8b7c6d5e4f3'
 down_revision = 'b9c8d7e6f5a4'
 branch_labels = None
 depends_on = None
@@ -37,9 +37,9 @@ def upgrade() -> None:
         'VM',              # Per-VM encryption key
         'CONTAINER',       # Per-container encryption key
         name='encryption_key_type',
-        create_type=True
+        create_type=False  # We'll create it manually with checkfirst
     )
-    key_type_enum.create(op.get_bind())
+    key_type_enum.create(op.get_bind(), checkfirst=True)
 
     # Create encryption_keys table
     op.create_table(
