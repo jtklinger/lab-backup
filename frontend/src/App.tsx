@@ -13,6 +13,10 @@ import MainLayout from './components/layout/MainLayout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Backups from './pages/Backups';
+import VMs from './pages/VMs';
+import Containers from './pages/Containers';
+import Storage from './pages/Storage';
+import Schedules from './pages/Schedules';
 
 // Protected Route wrapper
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -62,10 +66,10 @@ const AppContent: React.FC = () => {
           >
             <Route index element={<Dashboard />} />
             <Route path="backups" element={<Backups />} />
-            <Route path="vms" element={<div>VMs Page (Coming Soon)</div>} />
-            <Route path="containers" element={<div>Containers Page (Coming Soon)</div>} />
-            <Route path="storage" element={<div>Storage Page (Coming Soon)</div>} />
-            <Route path="schedules" element={<div>Schedules Page (Coming Soon)</div>} />
+            <Route path="vms" element={<VMs />} />
+            <Route path="containers" element={<Containers />} />
+            <Route path="storage" element={<Storage />} />
+            <Route path="schedules" element={<Schedules />} />
             <Route path="admin" element={<div>Admin Page (Coming Soon)</div>} />
           </Route>
         </Routes>
