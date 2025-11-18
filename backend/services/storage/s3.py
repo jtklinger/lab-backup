@@ -39,17 +39,36 @@ class S3Storage(StorageBackend):
             "region": "us-west-002",
             "prefix": "lab-backup/",  # Optional prefix for all objects
             "storage_class": "STANDARD",  # or GLACIER, etc.
-            "server_side_encryption": "AES256",  # Optional
-            "object_lock_enabled": false,  # Enable S3 Object Lock for immutability
-            "default_retention_days": 30,  # Default retention period
-            "default_retention_mode": "GOVERNANCE"  # GOVERNANCE or COMPLIANCE
+
+            # Server-Side Encryption (Issue #12)
+            "sse": {
+                "mode": "SSE-S3",  # SSE-S3, SSE-KMS, or None
+                "kms_key_id": "arn:aws:kms:region:account:key/key-id"  # For SSE-KMS only
+            },
+
+            # Object Lock for immutability (Issue #13)
+            "object_lock_enabled": false,
+            "default_retention_days": 30,
+            "default_retention_mode": "GOVERNANCE"
         }
         """
         super().__init__(config)
         self.bucket_name = config["bucket_name"]
         self.prefix = config.get("prefix", "")
         self.storage_class = config.get("storage_class", "STANDARD")
-        self.server_side_encryption = config.get("server_side_encryption")
+
+        # Server-Side Encryption configuration (Issue #12)
+        self.sse_config = config.get("sse", {})
+        self.sse_mode = self.sse_config.get("mode")  # SSE-S3, SSE-KMS, None
+        self.sse_kms_key_id = self.sse_config.get("kms_key_id")  # For SSE-KMS
+
+        # Legacy support for server_side_encryption field
+        if not self.sse_mode and config.get("server_side_encryption"):
+            legacy_sse = config.get("server_side_encryption")
+            if legacy_sse == "AES256":
+                self.sse_mode = "SSE-S3"
+            elif legacy_sse == "aws:kms":
+                self.sse_mode = "SSE-KMS"
 
         # S3 Object Lock configuration (Issue #13)
         self.object_lock_enabled = config.get("object_lock_enabled", False)
@@ -79,6 +98,74 @@ class S3Storage(StorageBackend):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(self.executor, func, *args)
 
+    def _apply_sse_config(self, extra_args: Dict[str, Any]) -> None:
+        """
+        Apply server-side encryption configuration to upload parameters.
+
+        Modifies extra_args dict in-place to add SSE headers.
+
+        Related: Issue #12 - S3 Server-Side Encryption Support
+        """
+        if not self.sse_mode:
+            return
+
+        if self.sse_mode == "SSE-S3":
+            extra_args["ServerSideEncryption"] = "AES256"
+            self.logger.debug("Applied SSE-S3 encryption (AES256)")
+
+        elif self.sse_mode == "SSE-KMS":
+            extra_args["ServerSideEncryption"] = "aws:kms"
+            if self.sse_kms_key_id:
+                extra_args["SSEKMSKeyId"] = self.sse_kms_key_id
+                self.logger.debug(f"Applied SSE-KMS encryption with key: {self.sse_kms_key_id}")
+            else:
+                # Use default AWS KMS key for S3
+                self.logger.debug("Applied SSE-KMS encryption with default AWS key")
+
+        elif self.sse_mode == "SSE-C":
+            self.logger.warning(
+                "SSE-C (customer-provided keys) not yet implemented. "
+                "Use SSE-S3 or SSE-KMS instead."
+            )
+
+    def _get_sse_metadata(self) -> Dict[str, Any]:
+        """
+        Get SSE metadata for tracking in backup records.
+
+        Returns:
+            Dictionary with storage_encryption_type and storage_encryption_key_id
+
+        Related: Issue #12
+        """
+        if not self.sse_mode:
+            return {
+                "storage_encryption_type": "NONE",
+                "storage_encryption_key_id": None
+            }
+
+        if self.sse_mode == "SSE-S3":
+            return {
+                "storage_encryption_type": "SSE_S3",
+                "storage_encryption_key_id": None
+            }
+
+        elif self.sse_mode == "SSE-KMS":
+            return {
+                "storage_encryption_type": "SSE_KMS",
+                "storage_encryption_key_id": self.sse_kms_key_id
+            }
+
+        elif self.sse_mode == "SSE-C":
+            return {
+                "storage_encryption_type": "SSE_C",
+                "storage_encryption_key_id": "customer-provided"
+            }
+
+        return {
+            "storage_encryption_type": "NONE",
+            "storage_encryption_key_id": None
+        }
+
     async def upload(
         self,
         source_path: Path,
@@ -105,8 +192,8 @@ class S3Storage(StorageBackend):
                 "Metadata": metadata or {}
             }
 
-            if self.server_side_encryption:
-                extra_args["ServerSideEncryption"] = self.server_side_encryption
+            # Apply SSE configuration (Issue #12)
+            self._apply_sse_config(extra_args)
 
             await self._run_in_executor(
                 lambda: self.client.upload_file(
@@ -117,11 +204,16 @@ class S3Storage(StorageBackend):
                 )
             )
 
-            return {
+            result = {
                 "path": object_key,
                 "size": size,
                 "checksum": checksum
             }
+
+            # Add SSE metadata (Issue #12)
+            result.update(self._get_sse_metadata())
+
+            return result
 
         except ClientError as e:
             self.logger.error(f"Failed to upload file to S3: {e}")
@@ -150,26 +242,31 @@ class S3Storage(StorageBackend):
             # Upload
             extra_args = {
                 "StorageClass": self.storage_class,
-                "Metadata": metadata or {}
+                "Metadata": metadata or {},
+                "Body": data
             }
 
-            if self.server_side_encryption:
-                extra_args["ServerSideEncryption"] = self.server_side_encryption
+            # Apply SSE configuration (Issue #12)
+            self._apply_sse_config(extra_args)
 
             await self._run_in_executor(
                 lambda: self.client.put_object(
                     Bucket=self.bucket_name,
                     Key=object_key,
-                    Body=data,
                     **extra_args
                 )
             )
 
-            return {
+            result = {
                 "path": object_key,
                 "size": len(data),
                 "checksum": checksum
             }
+
+            # Add SSE metadata (Issue #12)
+            result.update(self._get_sse_metadata())
+
+            return result
 
         except ClientError as e:
             self.logger.error(f"Failed to upload stream to S3: {e}")
@@ -240,8 +337,8 @@ class S3Storage(StorageBackend):
             if legal_hold:
                 extra_args["ObjectLockLegalHoldStatus"] = "ON"
 
-            if self.server_side_encryption:
-                extra_args["ServerSideEncryption"] = self.server_side_encryption
+            # Apply SSE configuration (Issue #12)
+            self._apply_sse_config(extra_args)
 
             await self._run_in_executor(
                 lambda: self.client.upload_file(
@@ -257,7 +354,7 @@ class S3Storage(StorageBackend):
                 f"{object_key} (retain until {retain_until})"
             )
 
-            return {
+            result = {
                 "path": object_key,
                 "size": size,
                 "checksum": checksum,
@@ -265,6 +362,11 @@ class S3Storage(StorageBackend):
                 "retention_until": retain_until.isoformat(),
                 "legal_hold": legal_hold
             }
+
+            # Add SSE metadata (Issue #12)
+            result.update(self._get_sse_metadata())
+
+            return result
 
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')

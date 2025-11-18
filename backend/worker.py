@@ -204,6 +204,17 @@ async def _execute_backup_async(schedule_id: Optional[int], backup_id: int):
                 backup.storage_path = result.get("storage_path")
                 backup.checksum = result.get("checksum")
 
+                # Capture storage encryption metadata (Issue #12)
+                if result.get("storage_encryption_type"):
+                    backup.storage_encryption_type = result.get("storage_encryption_type")
+                    backup.storage_encryption_key_id = result.get("storage_encryption_key_id")
+                    logger.info(
+                        f"Backup {backup.id} uses {backup.storage_encryption_type} encryption"
+                    )
+                elif backup.encryption_key_id:
+                    # App-level encryption was used
+                    backup.storage_encryption_type = "APP_LEVEL"
+
                 # Initialize backup chain tracking (Issue #10)
                 try:
                     from backend.services.backup_chain import BackupChainService
@@ -603,7 +614,10 @@ async def _backup_vm(db, schedule, backup, job):
         return {
             **archive_result,
             "storage_path": storage_path,
-            "checksum": upload_result.get("checksum")
+            "checksum": upload_result.get("checksum"),
+            # Include storage encryption metadata (Issue #12)
+            "storage_encryption_type": upload_result.get("storage_encryption_type"),
+            "storage_encryption_key_id": upload_result.get("storage_encryption_key_id")
         }
 
 
@@ -770,7 +784,10 @@ async def _backup_container(db, schedule, backup, job):
         return {
             **archive_result,
             "storage_path": storage_path,
-            "checksum": upload_result.get("checksum")
+            "checksum": upload_result.get("checksum"),
+            # Include storage encryption metadata (Issue #12)
+            "storage_encryption_type": upload_result.get("storage_encryption_type"),
+            "storage_encryption_key_id": upload_result.get("storage_encryption_key_id")
         }
 
 

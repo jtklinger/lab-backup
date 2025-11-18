@@ -48,6 +48,15 @@ class RetentionMode(str, enum.Enum):
     LEGAL_HOLD = "LEGAL_HOLD"  # Indefinite retention, must remove hold first
 
 
+class StorageEncryptionType(str, enum.Enum):
+    """Storage-level encryption types (Issue #12)."""
+    NONE = "NONE"  # No encryption
+    APP_LEVEL = "APP_LEVEL"  # Application-level encryption (encrypt before upload)
+    SSE_S3 = "SSE_S3"  # S3-managed encryption keys (AES256)
+    SSE_KMS = "SSE_KMS"  # AWS KMS-managed keys
+    SSE_C = "SSE_C"  # Customer-provided encryption keys
+
+
 class BackupSchedule(Base):
     """Backup schedule configuration."""
 
@@ -299,6 +308,20 @@ class Backup(Base):
         String(255),
         nullable=True,
         comment="Human-readable reason for immutability (compliance, ransomware protection, etc.)"
+    )
+
+    # Storage-level Encryption Metadata (Issue #12)
+    storage_encryption_type: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        default="NONE",
+        index=True,
+        comment="Storage-level encryption: NONE, APP_LEVEL, SSE_S3, SSE_KMS, SSE_C"
+    )
+    storage_encryption_key_id: Mapped[Optional[str]] = mapped_column(
+        String(500),
+        nullable=True,
+        comment="KMS Key ARN for SSE-KMS or customer key identifier for SSE-C"
     )
 
     # Relationships

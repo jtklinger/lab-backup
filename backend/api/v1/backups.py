@@ -53,6 +53,9 @@ class BackupResponse(BaseModel):
     retention_until: Optional[datetime] = None
     retention_mode: Optional[str] = None
     immutability_reason: Optional[str] = None
+    # Storage encryption metadata (Issue #12)
+    storage_encryption_type: Optional[str] = "NONE"
+    storage_encryption_key_id: Optional[str] = None
 
     class Config:
         from_attributes = True
