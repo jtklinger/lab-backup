@@ -41,6 +41,13 @@ class BackupMode(str, enum.Enum):
     INCREMENTAL = "incremental"
 
 
+class RetentionMode(str, enum.Enum):
+    """Immutable backup retention modes (Issue #13)."""
+    GOVERNANCE = "GOVERNANCE"  # Admin can override deletion
+    COMPLIANCE = "COMPLIANCE"  # Cannot delete until retention expires
+    LEGAL_HOLD = "LEGAL_HOLD"  # Indefinite retention, must remove hold first
+
+
 class BackupSchedule(Base):
     """Backup schedule configuration."""
 
@@ -267,6 +274,31 @@ class Backup(Base):
         Text,
         nullable=True,
         comment="Log of pre/post backup script execution results"
+    )
+
+    # Immutable Backup Support (Issue #13)
+    immutable: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        index=True,
+        comment="Whether this backup is immutable (WORM protected)"
+    )
+    retention_until: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+        comment="Timestamp when retention expires and deletion is allowed"
+    )
+    retention_mode: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="Retention mode: GOVERNANCE, COMPLIANCE, LEGAL_HOLD"
+    )
+    immutability_reason: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="Human-readable reason for immutability (compliance, ransomware protection, etc.)"
     )
 
     # Relationships

@@ -48,6 +48,11 @@ class BackupResponse(BaseModel):
     dedupe_ratio: Optional[float] = None
     compression_ratio: Optional[float] = None
     space_saved_bytes: Optional[int] = None
+    # Immutability fields (Issue #13)
+    immutable: bool = False
+    retention_until: Optional[datetime] = None
+    retention_mode: Optional[str] = None
+    immutability_reason: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -223,15 +228,56 @@ async def get_backup(
 @router.delete("/{backup_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_backup(
     backup_id: int,
+    override_governance: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.OPERATOR))
 ):
-    """Delete a backup."""
+    """
+    Delete a backup.
+
+    Args:
+        backup_id: ID of backup to delete
+        override_governance: If True, bypass GOVERNANCE mode retention (admin only)
+
+    Raises:
+        403: If backup is immutable and cannot be deleted
+        404: If backup not found
+
+    Related: Issue #13 - Immutable Backup Support
+    """
     backup = await db.get(Backup, backup_id)
     if not backup:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Backup not found"
+        )
+
+    # Check immutability protection (Issue #13)
+    from backend.services.immutability import ImmutabilityService
+    immutability_service = ImmutabilityService(db)
+
+    is_admin = current_user.role == UserRole.ADMIN
+    can_delete, reason = await immutability_service.can_delete_backup(
+        backup_id,
+        is_admin=is_admin,
+        override_governance=override_governance
+    )
+
+    if not can_delete:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cannot delete backup: {reason}"
+        )
+
+    # Check backup chain dependencies (Issue #10)
+    from backend.services.backup_chain import BackupChainService
+    chain_service = BackupChainService(db)
+    can_delete_chain, chain_reason = await chain_service.can_delete_backup(backup_id)
+
+    if not can_delete_chain:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot delete backup: {chain_reason}. Delete dependent backups first."
         )
 
     # Delete from storage
@@ -242,11 +288,26 @@ async def delete_backup(
         storage_backend = await db.get(StorageBackendModel, backup.storage_backend_id)
         if storage_backend:
             storage = create_storage_backend(storage_backend.type, storage_backend.config)
-            await storage.delete(backup.storage_path)
 
-    # Delete from database
-    await db.delete(backup)
-    await db.commit()
+            # For S3 with Object Lock, pass override flag
+            if storage_backend.type == "s3":
+                await storage.delete(backup.storage_path, bypass_governance=override_governance and is_admin)
+            else:
+                await storage.delete(backup.storage_path)
+
+    # Delete from database (may be blocked by PostgreSQL trigger)
+    try:
+        await db.delete(backup)
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        # Database trigger blocked deletion
+        if "immutable" in str(e).lower() or "COMPLIANCE" in str(e) or "LEGAL_HOLD" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Database protection: {str(e)}"
+            )
+        raise
 
     return None
 
@@ -395,6 +456,148 @@ async def verify_backup_endpoint(
         "task_id": task.id,
         "status": "Verification in progress - check backup verification_status for results"
     }
+
+
+# ============================================================================
+# Immutability Management Endpoints (Issue #13)
+# ============================================================================
+
+class MakeImmutableRequest(BaseModel):
+    """Request model for making a backup immutable."""
+    retention_days: int = Field(..., description="Number of days to retain (0 for indefinite with LEGAL_HOLD)")
+    retention_mode: str = Field("COMPLIANCE", description="Retention mode: GOVERNANCE, COMPLIANCE, or LEGAL_HOLD")
+    reason: Optional[str] = Field(None, description="Human-readable reason for immutability")
+
+
+@router.post("/{backup_id}/immutable", status_code=status.HTTP_200_OK)
+async def make_backup_immutable(
+    backup_id: int,
+    request: MakeImmutableRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN))
+):
+    """
+    Mark a backup as immutable with retention policy.
+
+    Admin-only endpoint. Once a backup is made immutable, it cannot be deleted
+    until the retention period expires (or indefinitely for LEGAL_HOLD).
+
+    Retention modes:
+    - GOVERNANCE: Admin can override deletion
+    - COMPLIANCE: Cannot delete until retention expires
+    - LEGAL_HOLD: Indefinite retention, must remove hold first
+
+    Related: Issue #13 - Immutable Backup Support
+    """
+    from backend.services.immutability import ImmutabilityService, ImmutabilityError
+    from backend.models.backup import RetentionMode
+
+    backup = await db.get(Backup, backup_id)
+    if not backup:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Backup not found"
+        )
+
+    # Validate retention mode
+    try:
+        retention_mode_enum = RetentionMode(request.retention_mode)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid retention_mode: {request.retention_mode}. "
+                   "Must be GOVERNANCE, COMPLIANCE, or LEGAL_HOLD"
+        )
+
+    immutability_service = ImmutabilityService(db)
+
+    try:
+        await immutability_service.make_backup_immutable(
+            backup,
+            retention_days=request.retention_days,
+            retention_mode=retention_mode_enum,
+            reason=request.reason
+        )
+        await db.commit()
+        await db.refresh(backup)
+
+        return {
+            "message": f"Backup {backup_id} marked as immutable",
+            "backup_id": backup_id,
+            "retention_mode": backup.retention_mode,
+            "retention_until": backup.retention_until.isoformat() if backup.retention_until else None,
+            "immutability_reason": backup.immutability_reason
+        }
+
+    except ImmutabilityError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.delete("/{backup_id}/legal-hold", status_code=status.HTTP_200_OK)
+async def remove_legal_hold(
+    backup_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN))
+):
+    """
+    Remove legal hold from a backup and convert to COMPLIANCE mode.
+
+    Admin-only endpoint. Removes indefinite retention and sets a
+    standard retention period based on the backup schedule configuration.
+
+    Related: Issue #13 - Immutable Backup Support
+    """
+    from backend.services.immutability import ImmutabilityService, ImmutabilityError
+
+    backup = await db.get(Backup, backup_id)
+    if not backup:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Backup not found"
+        )
+
+    immutability_service = ImmutabilityService(db)
+
+    try:
+        await immutability_service.remove_legal_hold(backup_id)
+        await db.commit()
+        await db.refresh(backup)
+
+        return {
+            "message": f"Legal hold removed from backup {backup_id}",
+            "backup_id": backup_id,
+            "retention_mode": backup.retention_mode,
+            "retention_until": backup.retention_until.isoformat() if backup.retention_until else None
+        }
+
+    except ImmutabilityError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+
+@router.get("/immutable/statistics")
+async def get_immutability_statistics(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get statistics about immutable backups.
+
+    Returns counts for each retention mode and expiry status.
+
+    Related: Issue #13 - Immutable Backup Support
+    """
+    from backend.services.immutability import ImmutabilityService
+
+    immutability_service = ImmutabilityService(db)
+    stats = await immutability_service.get_retention_statistics()
+
+    return stats
 
 
 # ============================================================================

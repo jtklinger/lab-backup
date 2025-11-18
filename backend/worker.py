@@ -536,23 +536,68 @@ async def _backup_vm(db, schedule, backup, job):
         )
 
         storage_path = f"vms/{vm.name}/{file_to_upload.name}"
-        upload_result = await storage.upload(
-            source_path=file_to_upload,
-            destination_path=storage_path,
-            metadata={
-                "backup_id": str(backup.id),
-                "vm_name": vm.name,
-                "encrypted": encrypted
-            }
-        )
 
-        # Log
-        log = JobLog(
-            job_id=job.id,
-            level="INFO",
-            message=f"Backup uploaded to storage: {storage_path}"
-        )
-        db.add(log)
+        # Check if backup should be immutable (Issue #13)
+        # Schedule can configure automatic immutability via schedule_metadata
+        immutable_config = {}
+        if schedule and schedule.schedule_metadata:
+            immutable_config = schedule.schedule_metadata.get('immutability', {})
+
+        upload_metadata = {
+            "backup_id": str(backup.id),
+            "vm_name": vm.name,
+            "encrypted": encrypted
+        }
+
+        # Upload with S3 Object Lock if immutability configured
+        if immutable_config.get('enabled') and storage_backend_model.type == 's3':
+            from backend.services.storage.s3 import S3Storage
+            from backend.models.backup import RetentionMode
+
+            retention_mode = immutable_config.get('retention_mode', 'GOVERNANCE')
+            retention_days = immutable_config.get('retention_days', 30)
+            legal_hold = immutable_config.get('legal_hold', False)
+
+            upload_result = await storage.upload_with_retention(
+                source_path=file_to_upload,
+                destination_path=storage_path,
+                retention_mode=retention_mode,
+                retention_days=retention_days,
+                legal_hold=legal_hold,
+                metadata=upload_metadata
+            )
+
+            # Mark backup as immutable in database
+            from backend.services.immutability import ImmutabilityService
+            immutability_service = ImmutabilityService(db)
+            await immutability_service.make_backup_immutable(
+                backup,
+                retention_days=retention_days,
+                retention_mode=RetentionMode(retention_mode),
+                reason=immutable_config.get('reason', 'Scheduled immutable backup')
+            )
+
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Immutable backup uploaded to storage with {retention_mode} retention: {storage_path}"
+            )
+            db.add(log)
+        else:
+            # Standard upload
+            upload_result = await storage.upload(
+                source_path=file_to_upload,
+                destination_path=storage_path,
+                metadata=upload_metadata
+            )
+
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Backup uploaded to storage: {storage_path}"
+            )
+            db.add(log)
+
         await db.commit()
 
         return {
@@ -661,22 +706,64 @@ async def _backup_container(db, schedule, backup, job):
         )
 
         storage_path = f"containers/{container.name}/{file_to_upload.name}"
-        upload_result = await storage.upload(
-            source_path=file_to_upload,
-            destination_path=storage_path,
-            metadata={
-                "backup_id": str(backup.id),
-                "container_name": container.name,
-                "encrypted": encrypted
-            }
-        )
 
-        # Log
-        log = JobLog(
-            job_id=job.id,
-            level="INFO",
-            message=f"Backup uploaded to storage: {storage_path}"
-        )
+        # Check if backup should be immutable (Issue #13)
+        immutable_config = {}
+        if schedule and schedule.schedule_metadata:
+            immutable_config = schedule.schedule_metadata.get('immutability', {})
+
+        upload_metadata = {
+            "backup_id": str(backup.id),
+            "container_name": container.name,
+            "encrypted": encrypted
+        }
+
+        # Upload with S3 Object Lock if immutability configured
+        if immutable_config.get('enabled') and storage_backend_model.type == 's3':
+            from backend.services.storage.s3 import S3Storage
+            from backend.models.backup import RetentionMode
+
+            retention_mode = immutable_config.get('retention_mode', 'GOVERNANCE')
+            retention_days = immutable_config.get('retention_days', 30)
+            legal_hold = immutable_config.get('legal_hold', False)
+
+            upload_result = await storage.upload_with_retention(
+                source_path=file_to_upload,
+                destination_path=storage_path,
+                retention_mode=retention_mode,
+                retention_days=retention_days,
+                legal_hold=legal_hold,
+                metadata=upload_metadata
+            )
+
+            # Mark backup as immutable in database
+            from backend.services.immutability import ImmutabilityService
+            immutability_service = ImmutabilityService(db)
+            await immutability_service.make_backup_immutable(
+                backup,
+                retention_days=retention_days,
+                retention_mode=RetentionMode(retention_mode),
+                reason=immutable_config.get('reason', 'Scheduled immutable backup')
+            )
+
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Immutable backup uploaded to storage with {retention_mode} retention: {storage_path}"
+            )
+        else:
+            # Standard upload
+            upload_result = await storage.upload(
+                source_path=file_to_upload,
+                destination_path=storage_path,
+                metadata=upload_metadata
+            )
+
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Backup uploaded to storage: {storage_path}"
+            )
         db.add(log)
         await db.commit()
 
