@@ -447,3 +447,118 @@ class KeyManagementService:
         logger.info(f"Successfully imported {imported_count} encryption keys")
 
         return imported_count
+
+    # Storage Backend Key Management (Issue #11)
+
+    async def create_storage_backend_key(
+        self,
+        storage_backend_id: int
+    ) -> EncryptionKey:
+        """
+        Create a new encryption key for a storage backend.
+
+        Args:
+            storage_backend_id: ID of the storage backend
+
+        Returns:
+            New EncryptionKey instance
+
+        Raises:
+            KeyManagementError: If key creation fails
+        """
+        logger.info(f"Creating encryption key for storage backend {storage_backend_id}")
+
+        # Generate new key for this storage backend
+        encryption_key = await self.generate_key(
+            key_type=EncryptionKeyType.STORAGE_BACKEND,
+            reference_id=storage_backend_id
+        )
+
+        await self.db.commit()
+
+        logger.info(
+            f"Created encryption key {encryption_key.id} for "
+            f"storage backend {storage_backend_id}"
+        )
+
+        return encryption_key
+
+    async def get_storage_backend_key(
+        self,
+        storage_backend_id: int,
+        create_if_missing: bool = False
+    ) -> Optional[bytes]:
+        """
+        Get the decrypted encryption key for a storage backend.
+
+        Args:
+            storage_backend_id: ID of the storage backend
+            create_if_missing: If True, create key if it doesn't exist
+
+        Returns:
+            Decrypted key bytes or None if not found
+
+        Raises:
+            KeyManagementError: If key retrieval/decryption fails
+        """
+        encryption_key = await self.get_active_key(
+            key_type=EncryptionKeyType.STORAGE_BACKEND,
+            reference_id=storage_backend_id,
+            create_if_missing=create_if_missing
+        )
+
+        if not encryption_key:
+            if create_if_missing:
+                logger.info(
+                    f"No key found for storage backend {storage_backend_id}, creating one"
+                )
+                encryption_key = await self.create_storage_backend_key(storage_backend_id)
+            else:
+                return None
+
+        # Decrypt and return the key
+        return self._decrypt_key(encryption_key.encrypted_key)
+
+    async def rotate_storage_backend_key(
+        self,
+        storage_backend_id: int
+    ) -> EncryptionKey:
+        """
+        Rotate the encryption key for a storage backend.
+
+        Creates a new key version and marks the old key as inactive.
+        Old backups can still be decrypted with the old key.
+        New backups will use the new key.
+
+        Args:
+            storage_backend_id: ID of the storage backend
+
+        Returns:
+            New EncryptionKey instance
+
+        Raises:
+            KeyManagementError: If rotation fails
+        """
+        logger.info(f"Rotating encryption key for storage backend {storage_backend_id}")
+
+        # Get current active key
+        current_key = await self.get_active_key(
+            key_type=EncryptionKeyType.STORAGE_BACKEND,
+            reference_id=storage_backend_id
+        )
+
+        if not current_key:
+            raise KeyManagementError(
+                f"No active key found for storage backend {storage_backend_id}"
+            )
+
+        # Rotate the key
+        new_key = await self.rotate_key(current_key.id)
+
+        logger.info(
+            f"Rotated encryption key for storage backend {storage_backend_id}: "
+            f"{current_key.id} (v{current_key.key_version}) -> "
+            f"{new_key.id} (v{new_key.key_version})"
+        )
+
+        return new_key

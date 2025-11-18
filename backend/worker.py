@@ -426,10 +426,73 @@ async def _backup_vm(db, schedule, backup, job):
             compression=settings.BACKUP_COMPRESSION
         )
 
-        # Encrypt backup if enabled
+        # Get storage backend for encryption strategy (Issue #11)
+        from backend.models.storage import StorageBackend as StorageBackendModel, EncryptionStrategy
+        storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
+
+        if not storage_backend_model:
+            raise Exception("Storage backend not found")
+
+        # Determine encryption strategy and key
         file_to_upload = archive_file
         encrypted = False
-        if settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+        encryption_key_to_use = None
+        encryption_key_id = None
+
+        if storage_backend_model.encryption_strategy == EncryptionStrategy.APP_LEVEL:
+            # Use storage-backend-specific encryption key (Issue #11)
+            from backend.services.key_management import KeyManagementService
+            key_service = KeyManagementService(db)
+
+            encryption_key_bytes = await key_service.get_storage_backend_key(
+                storage_backend_model.id,
+                create_if_missing=True
+            )
+
+            if encryption_key_bytes:
+                encryption_key_to_use = encryption_key_bytes.decode('utf-8')
+                encryption_key_id = storage_backend_model.encryption_key_id
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Using storage-backend-specific encryption key (key ID: {encryption_key_id})"
+                )
+                db.add(log)
+                await db.commit()
+
+        elif storage_backend_model.encryption_strategy == EncryptionStrategy.GLOBAL:
+            # Use global encryption key (backward compatibility)
+            if settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+                encryption_key_to_use = settings.ENCRYPTION_KEY
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message="Using global encryption key"
+                )
+                db.add(log)
+                await db.commit()
+
+        elif storage_backend_model.encryption_strategy == EncryptionStrategy.STORAGE_NATIVE:
+            # Cloud-native encryption (S3 SSE, etc.) - handled by storage backend
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Using storage-native encryption (no app-level encryption)"
+            )
+            db.add(log)
+            await db.commit()
+
+        else:  # DISABLED
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Encryption disabled for this storage backend"
+            )
+            db.add(log)
+            await db.commit()
+
+        # Encrypt backup if we have a key
+        if encryption_key_to_use:
             log = JobLog(
                 job_id=job.id,
                 level="INFO",
@@ -445,13 +508,17 @@ async def _backup_vm(db, schedule, backup, job):
                 lambda: encrypt_backup(
                     archive_file,
                     encrypted_file,
-                    settings.ENCRYPTION_KEY,
+                    encryption_key_to_use,
                     use_chunked=True  # Use chunked for large files
                 )
             )
 
             file_to_upload = encrypted_file
             encrypted = True
+
+            # Store encryption key ID in backup record (Issue #11)
+            if encryption_key_id:
+                backup.encryption_key_id = encryption_key_id
 
             log = JobLog(
                 job_id=job.id,
@@ -462,11 +529,6 @@ async def _backup_vm(db, schedule, backup, job):
             await db.commit()
 
         # Upload to storage
-        from backend.models.storage import StorageBackend as StorageBackendModel
-        storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
-
-        if not storage_backend_model:
-            raise Exception("Storage backend not found")
 
         storage = create_storage_backend(
             storage_backend_model.type,
