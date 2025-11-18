@@ -130,6 +130,42 @@ class VM(Base):
         comment='Whether hypervisor supports CBT (QEMU >= 4.0)'
     )
 
+    # QEMU Guest Agent for Application Consistency (Issue #14)
+    guest_agent_available: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        index=True,
+        comment='Whether qemu-guest-agent is detected and responsive'
+    )
+    application_consistency_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        comment='Whether to attempt application-consistent backups (requires guest agent)'
+    )
+    pre_backup_script: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment='Script to execute in guest before backup (e.g., database quiesce)'
+    )
+    post_backup_script: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment='Script to execute in guest after backup (e.g., database resume)'
+    )
+    fsfreeze_timeout_seconds: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=30,
+        comment='Timeout for filesystem freeze operations (default 30 seconds)'
+    )
+    last_guest_agent_check: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment='When guest agent availability was last checked'
+    )
+
     # Relationships
     kvm_host: Mapped["KVMHost"] = relationship(back_populates="vms")
     backup_schedules: Mapped[list["BackupSchedule"]] = relationship(

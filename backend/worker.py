@@ -387,6 +387,28 @@ async def _backup_vm(db, schedule, backup, job):
         else:
             backup.cbt_enabled = False
 
+        # Update backup with application consistency metadata (Issue #14)
+        backup.application_consistent = backup_result.get('application_consistent', False)
+        backup.fsfreeze_status = backup_result.get('fsfreeze_status')
+        backup.script_execution_log = backup_result.get('script_execution_log')
+
+        if backup.application_consistent:
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Application-consistent backup created (filesystem frozen during snapshot)"
+            )
+            db.add(log)
+        else:
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Crash-consistent backup created (fsfreeze status: {backup.fsfreeze_status or 'not attempted'})"
+            )
+            db.add(log)
+
+        await db.commit()
+
         # Log
         log = JobLog(
             job_id=job.id,

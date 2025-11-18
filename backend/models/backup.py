@@ -250,6 +250,25 @@ class Backup(Base):
         comment="Block size (granularity) used for CBT tracking (bytes)"
     )
 
+    # Application Consistency via Guest Agent (Issue #14)
+    application_consistent: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        index=True,
+        comment="Whether this backup was created with application consistency (fsfreeze + scripts)"
+    )
+    fsfreeze_status: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="Status of filesystem freeze: SUCCESS, FAILED, TIMEOUT, NOT_ATTEMPTED"
+    )
+    script_execution_log: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Log of pre/post backup script execution results"
+    )
+
     # Relationships
     schedule: Mapped[Optional["BackupSchedule"]] = relationship(back_populates="backups")
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backups")

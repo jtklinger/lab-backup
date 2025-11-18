@@ -586,6 +586,56 @@ Host {hostname}
                 with open(info_file, 'w') as f:
                     json.dump(vm_info, f, indent=2)
 
+                # Application consistency via guest agent (Issue #14)
+                from backend.services.kvm.guest_agent import (
+                    GuestAgentService,
+                    FreezeStatus,
+                    GuestAgentError,
+                    GuestAgentTimeout
+                )
+
+                application_consistent = False
+                fsfreeze_status = FreezeStatus.NOT_ATTEMPTED
+                script_log = []
+
+                # Check if VM supports application consistency
+                # Note: This requires VM database record to check settings
+                # For now, we'll attempt if guest agent is available
+                guest_agent = GuestAgentService(domain)
+                use_guest_agent = guest_agent.is_guest_agent_available()
+
+                if use_guest_agent:
+                    logger.info(f"Guest agent available, attempting application-consistent backup")
+
+                    try:
+                        # Execute pre-backup script if configured
+                        # TODO: Get script from VM database record
+                        # For now, skip script execution (will be added in worker integration)
+
+                        # Freeze filesystem
+                        frozen_count = guest_agent.freeze_filesystem(timeout_seconds=30)
+                        fsfreeze_status = FreezeStatus.SUCCESS
+                        logger.info(f"Filesystem frozen ({frozen_count} filesystems)")
+
+                        # Update VM info to indicate app consistency
+                        vm_info['application_consistent'] = True
+                        vm_info['frozen_filesystems'] = frozen_count
+
+                        with open(info_file, 'w') as f:
+                            json.dump(vm_info, f, indent=2)
+
+                    except GuestAgentTimeout:
+                        logger.warning("Filesystem freeze timed out, proceeding with crash-consistent backup")
+                        fsfreeze_status = FreezeStatus.TIMEOUT
+                        use_guest_agent = False
+                    except GuestAgentError as e:
+                        logger.warning(f"Guest agent operation failed: {e}, proceeding with crash-consistent backup")
+                        fsfreeze_status = FreezeStatus.FAILED
+                        use_guest_agent = False
+                else:
+                    logger.info("Guest agent not available, creating crash-consistent backup")
+                    fsfreeze_status = FreezeStatus.NOT_AVAILABLE
+
                 # Create snapshot for consistent backup (if VM is running)
                 snapshot_name = f"backup-{vm_name}"
                 snapshot_created = False
@@ -605,8 +655,32 @@ Host {hostname}
                         )
                         snapshot_created = True
                         logger.info(f"Created snapshot for VM: {vm_name}")
+
+                        # If filesystem was frozen, we have application-consistent backup
+                        if fsfreeze_status == FreezeStatus.SUCCESS:
+                            application_consistent = True
+
                     except libvirt.libvirtError as e:
                         logger.warning(f"Failed to create snapshot (proceeding anyway): {e}")
+
+                    finally:
+                        # Always thaw filesystem if it was frozen
+                        if use_guest_agent and fsfreeze_status == FreezeStatus.SUCCESS:
+                            try:
+                                thawed_count = guest_agent.thaw_filesystem()
+                                logger.info(f"Filesystem thawed ({thawed_count} filesystems)")
+
+                                # Execute post-backup script if configured
+                                # TODO: Get script from VM database record
+
+                            except Exception as e:
+                                logger.error(f"Failed to thaw filesystem: {e}")
+                                # This is critical - filesystem is still frozen
+                                # Add to script log for visibility
+                                script_log.append(f"ERROR: Failed to thaw filesystem: {e}")
+                else:
+                    # VM not running, no snapshot needed
+                    logger.info(f"VM not running, no snapshot created")
 
                 # Backup disk images
                 total_size = 0
@@ -796,7 +870,11 @@ Host {hostname}
                     "disks": backed_up_disks,
                     "total_size": total_size,
                     "backup_dir": str(backup_dir),
-                    "incremental": incremental
+                    "incremental": incremental,
+                    # Application consistency metadata (Issue #14)
+                    "application_consistent": application_consistent,
+                    "fsfreeze_status": fsfreeze_status,
+                    "script_execution_log": "\n".join(script_log) if script_log else None
                 }
 
             return await self._run_in_executor(_backup)
