@@ -79,6 +79,22 @@ services:
       - lab-backup
     restart: unless-stopped
 
+  # Frontend (React + Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: lab-backup-frontend
+    environment:
+      - VITE_API_URL=https://api:8443
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - lab-backup
+    restart: unless-stopped
+
   # Celery Worker
   celery-worker:
     build:
