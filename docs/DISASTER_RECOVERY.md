@@ -38,6 +38,103 @@ python scripts/verify-database-backup.py --storage <storage-name> --all
 
 ---
 
+## Encryption Key Management (NEW - Issue #7)
+
+**CRITICAL**: Starting with the key management update, encryption keys are stored in the database and can be exported/imported separately for disaster recovery.
+
+### Understanding the Key Architecture
+
+The system uses **envelope encryption** with two levels of keys:
+
+1. **Master KEK (Key Encryption Key)**
+   - Stored in `.env` as `ENCRYPTION_KEY`
+   - Encrypts all Data Encryption Keys (DEKs) in database
+   - **NEVER changes** - changing this makes all keys unrecoverable
+   - Must be backed up separately from database
+
+2. **Data Encryption Keys (DEKs)**
+   - Stored encrypted in the database (`encryption_keys` table)
+   - Decrypted on-demand using Master KEK
+   - Can be GLOBAL, per-storage-backend, per-VM, or per-container
+   - Exported/imported for disaster recovery
+
+### Exporting Encryption Keys
+
+**When to Export:**
+- After initial system setup
+- After key rotation
+- Before major system changes
+- Monthly as part of DR testing
+
+**How to Export:**
+
+```bash
+# Export all encryption keys to encrypted bundle
+python scripts/export-keys.py --output /secure/keys-backup-$(date +%Y%m%d).encrypted
+
+# You will be prompted for a passphrase
+# Store this passphrase SEPARATELY from the encrypted bundle!
+
+# Verify export was successful
+python scripts/import-keys.py --input /secure/keys-backup-*.encrypted --verify-only
+```
+
+**Storage Recommendations:**
+- **Encrypted Bundle**: Store in password manager, encrypted USB, or secure cloud storage
+- **Passphrase**: Store in DIFFERENT password manager or write down and lock in safe
+- **Never** store bundle and passphrase together
+- Keep multiple copies in different physical locations
+
+### Importing Encryption Keys (Disaster Recovery)
+
+**Scenario**: Fresh container deployment, need to restore encryption keys
+
+```bash
+# After deploying fresh container and restoring database
+python scripts/import-keys.py --input /secure/keys-backup-20251117.encrypted
+
+# Enter the passphrase when prompted
+# Keys will be re-encrypted with current Master KEK from .env
+```
+
+### Migration from Legacy .env-Only Encryption
+
+If upgrading from older version that only used `ENCRYPTION_KEY` in .env:
+
+```bash
+# Run ONE TIME after upgrade
+python scripts/migrate-keys-to-database.py
+
+# This creates a GLOBAL key in database from .env
+# All existing backups will be marked as using GLOBAL encryption
+```
+
+### Key Rotation
+
+Rotating keys improves security by limiting exposure if a key is compromised:
+
+```python
+# Example: Rotate GLOBAL encryption key
+from backend.services.key_management import KeyManagementService
+from backend.models.encryption import EncryptionKeyType
+
+async with AsyncSessionLocal() as db:
+    key_service = KeyManagementService(db)
+    old_key, new_key = await key_service.rotate_key(
+        EncryptionKeyType.GLOBAL,
+        reference_id=None
+    )
+    await db.commit()
+    print(f"Rotated: v{old_key.key_version} -> v{new_key.key_version}")
+
+# IMPORTANT: Export keys after rotation!
+# python scripts/export-keys.py --output keys-backup-rotated.encrypted
+```
+
+**Note**: Old backups continue using old key version. Key rotation does NOT re-encrypt existing backups.
+
+---
+
 ## Disaster Recovery Scenarios
 
 ### Scenario 1: Complete System Failure (Container Destroyed)
@@ -133,32 +230,109 @@ curl http://localhost:8000/api/v1/vms
 
 ### Scenario 3: Encryption Key Loss
 
-**Situation**: `.env` file lost, `ENCRYPTION_KEY` not available, cannot decrypt backups.
+**Situation**: Master KEK lost (`.env` file destroyed), cannot decrypt database encryption keys.
 
-**⚠️ CRITICAL**: If encryption keys are lost, encrypted backups are **permanently unrecoverable**.
+**⚠️ CRITICAL**: If BOTH the Master KEK AND encrypted key bundle are lost, encrypted backups are **permanently unrecoverable**.
 
-**Prevention:**
-1. **Backup `.env` file to secure location** (outside the container)
-2. **Use key export tool** (Issue #7 - upcoming feature)
+### Recovery Options
 
-**If keys are lost:**
-- Unencrypted backups can still be restored
-- Encrypted backups are unrecoverable
-- Must start fresh with new encryption keys
-- All future backups will use new keys
+#### Option A: Encrypted Key Bundle Available (RECOMMENDED)
 
-**Best Practices:**
+If you have the encrypted key bundle from `export-keys.py`:
+
 ```bash
-# Backup .env file to multiple secure locations
-cp .env /secure/location1/.env.backup
-cp .env /secure/location2/.env.backup
+# 1. Deploy fresh container with database restored
+docker-compose up -d
 
-# Encrypt .env backup with GPG
-gpg --encrypt --recipient your@email.com .env
+# 2. Set NEW Master KEK in .env
+# Generate new Fernet key:
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
-# Store in password manager
-# (copy ENCRYPTION_KEY and SECRET_KEY values)
+# Add to .env:
+ENCRYPTION_KEY=<new-key-from-above>
+
+# 3. Import encryption keys from bundle
+python scripts/import-keys.py --input /secure/keys-backup-20251117.encrypted
+
+# Keys will be re-encrypted with NEW Master KEK
+# All backups will now be decryptable!
 ```
+
+**Success**: All backups can be decrypted because the bundle contained the DEKs.
+
+#### Option B: .env Backup Available
+
+If you backed up the `.env` file:
+
+```bash
+# 1. Restore .env file to container
+cp /secure/backup/.env /path/to/lab-backup/.env
+
+# 2. Restart container
+docker-compose restart
+
+# All encryption keys in database can now be decrypted
+# All backups are immediately accessible
+```
+
+**Success**: Complete recovery with no data loss.
+
+#### Option C: Both Master KEK and Bundle Lost (WORST CASE)
+
+If BOTH `.env` and encrypted key bundle are lost:
+
+- **Encrypted backups**: Permanently unrecoverable
+- **Unencrypted backups**: Can still be restored
+- **Database backups**: Usable for metadata only (keys are encrypted)
+- **Must start fresh**: Generate new encryption keys
+
+```bash
+# Generate new encryption system
+python scripts/migrate-keys-to-database.py
+
+# All future backups will use new keys
+# Old encrypted backups are unrecoverable
+```
+
+### Prevention Strategy (CRITICAL)
+
+To avoid permanent data loss:
+
+**1. Export Encryption Keys Monthly**
+```bash
+# Create encrypted bundle
+python scripts/export-keys.py --output /secure/keys-$(date +%Y%m).encrypted
+
+# Store in password manager or secure cloud storage
+```
+
+**2. Backup .env File**
+```bash
+# Backup to multiple locations
+cp .env /secure/location1/.env.backup-$(date +%Y%m%d)
+cp .env /secure/location2/.env.backup-$(date +%Y%m%d)
+
+# Encrypt with GPG
+gpg --encrypt --recipient your@email.com .env
+mv .env.gpg /secure/location3/
+```
+
+**3. Test Recovery Quarterly**
+```bash
+# Verify encrypted bundle is valid
+python scripts/import-keys.py \
+  --input /secure/keys-backup.encrypted \
+  --verify-only
+
+# Verify .env backup is readable
+cat /secure/location1/.env.backup | grep ENCRYPTION_KEY
+```
+
+**4. Store Credentials Separately**
+- **Encrypted Bundle**: Password manager A, secure USB drive
+- **Bundle Passphrase**: Password manager B, written down in safe
+- **.env Backup**: Encrypted cloud storage, offline backup
+- **Never** store all three together
 
 ---
 

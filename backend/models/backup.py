@@ -163,6 +163,21 @@ class Backup(Base):
     verified_size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     verification_duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # Encryption key tracking (Issue #7)
+    encryption_key_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("encryption_keys.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+        comment="Reference to encryption key used for this backup"
+    )
+    encryption_scheme: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        default="GLOBAL",
+        index=True,
+        comment="GLOBAL, STORAGE, VM, or CONTAINER"
+    )
+
     # Relationships
     schedule: Mapped[Optional["BackupSchedule"]] = relationship(back_populates="backups")
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backups")
