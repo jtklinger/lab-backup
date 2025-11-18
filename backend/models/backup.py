@@ -226,6 +226,30 @@ class Backup(Base):
         comment="Total space saved vs full backup (original_size - compressed_size)"
     )
 
+    # Changed Block Tracking (Issue #15)
+    cbt_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        index=True,
+        comment="Whether this backup used CBT for incremental tracking"
+    )
+    changed_blocks_count: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        nullable=True,
+        comment="Number of changed blocks in incremental backup (0 for full backups)"
+    )
+    bitmap_name: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="Name of the dirty bitmap used for this backup"
+    )
+    block_size: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Block size (granularity) used for CBT tracking (bytes)"
+    )
+
     # Relationships
     schedule: Mapped[Optional["BackupSchedule"]] = relationship(back_populates="backups")
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backups")

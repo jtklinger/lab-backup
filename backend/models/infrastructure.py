@@ -106,6 +106,30 @@ class VM(Base):
         comment='When compliance was last calculated'
     )
 
+    # Changed Block Tracking (Issue #15)
+    cbt_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        index=True,
+        comment='Whether Changed Block Tracking is enabled for this VM'
+    )
+    dirty_bitmap_name: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment='Name of the active dirty bitmap for CBT'
+    )
+    qemu_version: Mapped[Optional[str]] = mapped_column(
+        String(50),
+        nullable=True,
+        comment='Detected QEMU version (e.g., "4.2.1")'
+    )
+    cbt_capable: Mapped[Optional[bool]] = mapped_column(
+        Boolean,
+        nullable=True,
+        comment='Whether hypervisor supports CBT (QEMU >= 4.0)'
+    )
+
     # Relationships
     kvm_host: Mapped["KVMHost"] = relationship(back_populates="vms")
     backup_schedules: Mapped[list["BackupSchedule"]] = relationship(
