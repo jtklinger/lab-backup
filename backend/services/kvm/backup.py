@@ -487,7 +487,8 @@ Host {hostname}
         vm_uuid: str,
         backup_dir: Path,
         incremental: bool = False,
-        parent_backup: Optional[str] = None
+        parent_backup: Optional[str] = None,
+        use_cbt: bool = False
     ) -> Dict[str, Any]:
         """
         Create a backup of a VM.
@@ -498,10 +499,16 @@ Host {hostname}
             backup_dir: Directory to store backup files
             incremental: Whether to create incremental backup
             parent_backup: Path to parent backup for incremental
+            use_cbt: Whether to use Changed Block Tracking (CBT) for incremental backup (Issue #15)
 
         Returns:
             Dictionary with backup information
         """
+        # If CBT is requested for incremental backup, use CBT-based backup
+        if use_cbt and incremental:
+            return await self._create_cbt_backup(uri, vm_uuid, backup_dir)
+
+        # Otherwise, use traditional backup method
         try:
             conn = await self._run_in_executor(self._get_connection, uri)
 
@@ -912,6 +919,14 @@ Host {hostname}
         """
         Restore a VM from a backup with flexible storage destination.
 
+        NOTE (Issue #15): CBT incremental restore not yet fully implemented.
+        For CBT-based incremental backups, full restore workflow requires:
+        1. Query backup chain from database (via BackupChainService)
+        2. Download full backup (sequence_number=0) + all incrementals in order
+        3. For each incremental: apply changed blocks to disk image
+        4. This requires NBD client implementation and disk image manipulation
+        Current implementation supports traditional full/incremental restore only.
+
         Args:
             uri: Libvirt connection URI
             backup_dir: Directory containing the extracted backup files
@@ -1183,6 +1198,153 @@ Host {hostname}
             raise
         except Exception as e:
             logger.error(f"Unexpected error during restore: {e}")
+            raise
+
+    async def _create_cbt_backup(
+        self,
+        uri: str,
+        vm_uuid: str,
+        backup_dir: Path
+    ) -> Dict[str, Any]:
+        """
+        Create an incremental backup using Changed Block Tracking (CBT).
+
+        This method uses QEMU dirty bitmaps to track changed blocks and exports
+        only the changed blocks via NBD for efficient incremental backups.
+
+        Args:
+            uri: Libvirt connection URI
+            vm_uuid: UUID of the VM to backup
+            backup_dir: Directory to store backup files
+
+        Returns:
+            Dictionary with backup information including CBT metadata
+
+        Related: Issue #15 - Implement Changed Block Tracking (CBT)
+        """
+        from backend.services.kvm.cbt import ChangedBlockTrackingService
+        from backend.services.kvm.nbd_backup import NBDBackupService
+
+        logger.info(f"Starting CBT-based incremental backup of VM {vm_uuid}")
+
+        try:
+            conn = await self._run_in_executor(self._get_connection, uri)
+
+            def _cbt_backup():
+                # Get domain
+                domain = conn.lookupByUUIDString(vm_uuid)
+                vm_name = domain.name()
+
+                logger.info(f"Using CBT for VM: {vm_name}")
+
+                # Initialize CBT service
+                cbt_service = ChangedBlockTrackingService(domain)
+
+                # Check if CBT is supported
+                if not cbt_service.is_cbt_supported():
+                    raise Exception("CBT not supported on this QEMU version (requires >= 4.0)")
+
+                # Get VM XML configuration
+                xml_desc = domain.XMLDesc(0)
+                root = ET.fromstring(xml_desc)
+
+                # Find first disk (for now, backup first disk only)
+                # TODO: Support multiple disks
+                disk_elem = root.find(".//disk[@device='disk']")
+                if disk_elem is None:
+                    raise Exception("No disks found for backup")
+
+                target_elem = disk_elem.find("target")
+                if target_elem is None:
+                    raise Exception("Disk target not found")
+
+                disk_target = target_elem.get("dev")
+                logger.info(f"Backing up disk: {disk_target}")
+
+                # Get or create dirty bitmap
+                bitmap_name = None
+                try:
+                    # Try to find existing bitmap for this VM
+                    # For now, create a new bitmap each time
+                    # TODO: Persist bitmap name in database and reuse
+                    bitmap_name = cbt_service.create_bitmap(disk_target)
+                    logger.info(f"Created dirty bitmap: {bitmap_name}")
+                except Exception as e:
+                    # If bitmap already exists, query it
+                    logger.warning(f"Bitmap creation failed: {e}, attempting to use existing bitmap")
+                    # TODO: Query existing bitmaps and select appropriate one
+                    raise
+
+                # Create backup directory
+                backup_dir.mkdir(parents=True, exist_ok=True)
+
+                # Save VM XML configuration
+                xml_file = backup_dir / "domain.xml"
+                with open(xml_file, 'w') as f:
+                    f.write(xml_desc)
+
+                # Get VM info
+                info = domain.info()
+                vm_info = {
+                    "name": vm_name,
+                    "uuid": vm_uuid,
+                    "state": self._get_state_name(info[0]),
+                    "vcpus": info[3],
+                    "memory": info[2] // 1024,
+                    "cbt_enabled": True,
+                    "bitmap_name": bitmap_name
+                }
+
+                # Save VM info
+                info_file = backup_dir / "vm_info.json"
+                with open(info_file, 'w') as f:
+                    json.dump(vm_info, f, indent=2)
+
+                # Initialize NBD backup service
+                nbd_service = NBDBackupService(domain, cbt_service)
+
+                # Export incremental backup
+                backup_file = backup_dir / f"{disk_target}-incremental.qcow2"
+                backup_stats = nbd_service.export_incremental_backup(
+                    disk_target=disk_target,
+                    bitmap_name=bitmap_name,
+                    output_path=str(backup_file)
+                )
+
+                logger.info(
+                    f"CBT backup completed: {backup_stats['changed_blocks_count']} "
+                    f"changed blocks, {backup_stats['original_size']} bytes"
+                )
+
+                # Calculate total size
+                total_size = sum(
+                    f.stat().st_size
+                    for f in backup_dir.glob("**/*")
+                    if f.is_file()
+                )
+
+                return {
+                    "total_size": total_size,
+                    "original_size": backup_stats["original_size"],
+                    "compressed_size": backup_stats["compressed_size"],
+                    "disk_count": 1,
+                    "disks": [{
+                        "target": disk_target,
+                        "backup_file": str(backup_file),
+                        "changed_blocks": backup_stats["changed_blocks_count"]
+                    }],
+                    "cbt_metadata": {
+                        "cbt_enabled": True,
+                        "bitmap_name": bitmap_name,
+                        "block_size": backup_stats["block_size"],
+                        "changed_blocks_count": backup_stats["changed_blocks_count"]
+                    }
+                }
+
+            return await self._run_in_executor(_cbt_backup)
+
+        except Exception as e:
+            logger.error(f"CBT backup failed: {e}")
             raise
 
     def close_connections(self):

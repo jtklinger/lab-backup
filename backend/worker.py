@@ -320,12 +320,72 @@ async def _backup_vm(db, schedule, backup, job):
         from backend.models.backup import BackupMode
         is_incremental = hasattr(backup, 'backup_mode') and backup.backup_mode == BackupMode.INCREMENTAL
 
-        backup_result = await kvm_service.create_backup(
-            uri=kvm_host.uri,
-            vm_uuid=vm.uuid,
-            backup_dir=backup_dir,
-            incremental=is_incremental
-        )
+        # Check if CBT (Changed Block Tracking) should be used (Issue #15)
+        use_cbt = False
+        if is_incremental and vm.cbt_enabled and vm.cbt_capable:
+            use_cbt = True
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message=f"Using Changed Block Tracking (CBT) for incremental backup"
+            )
+            db.add(log)
+            await db.commit()
+        elif is_incremental and not vm.cbt_enabled:
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="CBT not enabled for this VM, using traditional incremental backup"
+            )
+            db.add(log)
+            await db.commit()
+
+        # Attempt backup with CBT if requested, with fallback (Issue #15)
+        backup_result = None
+        cbt_fallback = False
+
+        try:
+            backup_result = await kvm_service.create_backup(
+                uri=kvm_host.uri,
+                vm_uuid=vm.uuid,
+                backup_dir=backup_dir,
+                incremental=is_incremental,
+                use_cbt=use_cbt
+            )
+        except Exception as e:
+            if use_cbt:
+                # CBT backup failed, fall back to traditional backup
+                logger.warning(f"CBT backup failed: {e}. Falling back to traditional incremental backup.")
+                log = JobLog(
+                    job_id=job.id,
+                    level="WARNING",
+                    message=f"CBT backup failed ({str(e)}), falling back to traditional backup"
+                )
+                db.add(log)
+                await db.commit()
+
+                cbt_fallback = True
+                # Retry with traditional backup
+                backup_result = await kvm_service.create_backup(
+                    uri=kvm_host.uri,
+                    vm_uuid=vm.uuid,
+                    backup_dir=backup_dir,
+                    incremental=is_incremental,
+                    use_cbt=False
+                )
+            else:
+                # Not a CBT backup, re-raise error
+                raise
+
+        # Update backup with CBT metadata (Issue #15)
+        if use_cbt and not cbt_fallback and 'cbt_metadata' in backup_result:
+            cbt_meta = backup_result['cbt_metadata']
+            backup.cbt_enabled = True
+            backup.changed_blocks_count = cbt_meta.get('changed_blocks_count', 0)
+            backup.bitmap_name = cbt_meta.get('bitmap_name')
+            backup.block_size = cbt_meta.get('block_size')
+        else:
+            backup.cbt_enabled = False
 
         # Log
         log = JobLog(
