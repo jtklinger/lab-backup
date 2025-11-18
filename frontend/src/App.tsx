@@ -17,6 +17,8 @@ import VMs from './pages/VMs';
 import Containers from './pages/Containers';
 import Storage from './pages/Storage';
 import Schedules from './pages/Schedules';
+import BackupWizard from './pages/BackupWizard';
+import RestoreWizard from './pages/RestoreWizard';
 
 // Protected Route wrapper
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -66,6 +68,8 @@ const AppContent: React.FC = () => {
           >
             <Route index element={<Dashboard />} />
             <Route path="backups" element={<Backups />} />
+            <Route path="backups/create" element={<BackupWizard />} />
+            <Route path="backups/:backupId/restore" element={<RestoreWizard />} />
             <Route path="vms" element={<VMs />} />
             <Route path="containers" element={<Containers />} />
             <Route path="storage" element={<Storage />} />
