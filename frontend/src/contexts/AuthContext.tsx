@@ -62,7 +62,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setError(null);
       setIsLoading(true);
 
-      const response = await api.post<LoginResponse>('/auth/login', credentials);
+      // Convert credentials to form-urlencoded format (OAuth2PasswordRequestForm)
+      const formData = new URLSearchParams();
+      formData.append('username', credentials.username);
+      formData.append('password', credentials.password);
+
+      const response = await api.post<LoginResponse>('/auth/login', formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      });
       const { access_token, user: userData } = response.data;
 
       // Save token and user to localStorage
