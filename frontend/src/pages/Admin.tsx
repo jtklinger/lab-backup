@@ -45,6 +45,7 @@ import {
   CheckCircle as TestIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
+import { useSnackbar } from 'notistack';
 import api, { handleApiError } from '../services/api';
 import type { User, KVMHost, PodmanHost, AuditLog, PaginatedResponse } from '../types';
 import { UserRole, KVMAuthType, AuditSeverity } from '../types';
@@ -110,11 +111,14 @@ const Admin: React.FC = () => {
 // USERS TAB
 // ============================================================================
 const UsersTab: React.FC = () => {
+  const { enqueueSnackbar } = useSnackbar();
   const [users, setUsers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [userToDelete, setUserToDelete] = useState<User | null>(null);
 
   const [formData, setFormData] = useState<{
     username: string;
@@ -184,14 +188,23 @@ const UsersTab: React.FC = () => {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this user?')) return;
+  const handleDeleteClick = (user: User) => {
+    setUserToDelete(user);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!userToDelete) return;
 
     try {
-      await api.delete(`/users/${id}`);
+      await api.delete(`/users/${userToDelete.id}`);
+      enqueueSnackbar('User deleted successfully', { variant: 'success' });
+      setDeleteDialogOpen(false);
+      setUserToDelete(null);
       await fetchUsers();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to delete user', { variant: 'error' });
     }
   };
 
@@ -314,7 +327,7 @@ const UsersTab: React.FC = () => {
                       <IconButton
                         size="small"
                         color="error"
-                        onClick={() => handleDelete(user.id)}
+                        onClick={() => handleDeleteClick(user)}
                       >
                         <DeleteIcon />
                       </IconButton>
@@ -399,6 +412,25 @@ const UsersTab: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
+        <DialogTitle>Delete User</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete user <strong>{userToDelete?.username}</strong>?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+            This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleDeleteConfirm} color="error" variant="contained">
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
@@ -407,12 +439,15 @@ const UsersTab: React.FC = () => {
 // KVM HOSTS TAB
 // ============================================================================
 const KVMHostsTab: React.FC = () => {
+  const { enqueueSnackbar } = useSnackbar();
   const [hosts, setHosts] = useState<KVMHost[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingHost, setEditingHost] = useState<KVMHost | null>(null);
   const [testingHost, setTestingHost] = useState<number | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [hostToDelete, setHostToDelete] = useState<KVMHost | null>(null);
 
   const [formData, setFormData] = useState<{
     name: string;
@@ -511,14 +546,23 @@ const KVMHostsTab: React.FC = () => {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this KVM host?')) return;
+  const handleDeleteClick = (host: KVMHost) => {
+    setHostToDelete(host);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!hostToDelete) return;
 
     try {
-      await api.delete(`/kvm-hosts/${id}`);
+      await api.delete(`/kvm-hosts/${hostToDelete.id}`);
+      enqueueSnackbar('KVM host deleted successfully', { variant: 'success' });
+      setDeleteDialogOpen(false);
+      setHostToDelete(null);
       await fetchHosts();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to delete KVM host', { variant: 'error' });
     }
   };
 
@@ -526,10 +570,11 @@ const KVMHostsTab: React.FC = () => {
     try {
       setTestingHost(id);
       await api.post(`/kvm-hosts/${id}/test`);
-      alert('Connection test successful!');
+      enqueueSnackbar('Connection test successful!', { variant: 'success' });
       await fetchHosts();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Connection test failed', { variant: 'error' });
     } finally {
       setTestingHost(null);
     }
@@ -657,7 +702,7 @@ const KVMHostsTab: React.FC = () => {
                       <IconButton
                         size="small"
                         color="error"
-                        onClick={() => handleDelete(host.id)}
+                        onClick={() => handleDeleteClick(host)}
                       >
                         <DeleteIcon />
                       </IconButton>
@@ -771,6 +816,25 @@ const KVMHostsTab: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
+        <DialogTitle>Delete KVM Host</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete <strong>{hostToDelete?.name}</strong>?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+            This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleDeleteConfirm} color="error" variant="contained">
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
@@ -779,12 +843,15 @@ const KVMHostsTab: React.FC = () => {
 // PODMAN HOSTS TAB
 // ============================================================================
 const PodmanHostsTab: React.FC = () => {
+  const { enqueueSnackbar } = useSnackbar();
   const [hosts, setHosts] = useState<PodmanHost[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingHost, setEditingHost] = useState<PodmanHost | null>(null);
   const [testingHost, setTestingHost] = useState<number | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [hostToDelete, setHostToDelete] = useState<PodmanHost | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -851,14 +918,23 @@ const PodmanHostsTab: React.FC = () => {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this Podman host?')) return;
+  const handleDeleteClick = (host: PodmanHost) => {
+    setHostToDelete(host);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!hostToDelete) return;
 
     try {
-      await api.delete(`/podman-hosts/${id}`);
+      await api.delete(`/podman-hosts/${hostToDelete.id}`);
+      enqueueSnackbar('Podman host deleted successfully', { variant: 'success' });
+      setDeleteDialogOpen(false);
+      setHostToDelete(null);
       await fetchHosts();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to delete Podman host', { variant: 'error' });
     }
   };
 
@@ -866,10 +942,11 @@ const PodmanHostsTab: React.FC = () => {
     try {
       setTestingHost(id);
       await api.post(`/podman-hosts/${id}/test`);
-      alert('Connection test successful!');
+      enqueueSnackbar('Connection test successful!', { variant: 'success' });
       await fetchHosts();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Connection test failed', { variant: 'error' });
     } finally {
       setTestingHost(null);
     }
@@ -987,7 +1064,7 @@ const PodmanHostsTab: React.FC = () => {
                       <IconButton
                         size="small"
                         color="error"
-                        onClick={() => handleDelete(host.id)}
+                        onClick={() => handleDeleteClick(host)}
                       >
                         <DeleteIcon />
                       </IconButton>
@@ -1071,6 +1148,25 @@ const PodmanHostsTab: React.FC = () => {
           <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
           <Button onClick={handleSubmit} variant="contained" disabled={!formData.name || !formData.hostname}>
             {editingHost ? 'Update' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
+        <DialogTitle>Delete Podman Host</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete <strong>{hostToDelete?.name}</strong>?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+            This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleDeleteConfirm} color="error" variant="contained">
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

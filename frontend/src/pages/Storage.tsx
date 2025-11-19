@@ -38,17 +38,21 @@ import {
   Storage as StorageIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
+import { useSnackbar } from 'notistack';
 import api, { handleApiError } from '../services/api';
 import type { StorageBackend } from '../types';
 import { StorageType } from '../types';
 
 const Storage: React.FC = () => {
+  const { enqueueSnackbar } = useSnackbar();
   const [backends, setBackends] = useState<StorageBackend[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingBackend, setEditingBackend] = useState<StorageBackend | null>(null);
   const [testingBackend, setTestingBackend] = useState<number | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [backendToDelete, setBackendToDelete] = useState<StorageBackend | null>(null);
 
   const [formData, setFormData] = useState<{
     name: string;
@@ -114,14 +118,23 @@ const Storage: React.FC = () => {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this storage backend?')) return;
+  const handleDeleteClick = (backend: StorageBackend) => {
+    setBackendToDelete(backend);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!backendToDelete) return;
 
     try {
-      await api.delete(`/storage-backends/${id}`);
+      await api.delete(`/storage-backends/${backendToDelete.id}`);
+      enqueueSnackbar('Storage backend deleted successfully', { variant: 'success' });
+      setDeleteDialogOpen(false);
+      setBackendToDelete(null);
       await fetchBackends();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to delete storage backend', { variant: 'error' });
     }
   };
 
@@ -129,9 +142,10 @@ const Storage: React.FC = () => {
     try {
       setTestingBackend(id);
       await api.post(`/storage-backends/${id}/test`);
-      alert('Connection test successful!');
+      enqueueSnackbar('Connection test successful!', { variant: 'success' });
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Connection test failed', { variant: 'error' });
     } finally {
       setTestingBackend(null);
     }
@@ -265,7 +279,7 @@ const Storage: React.FC = () => {
                       <IconButton
                         size="small"
                         color="error"
-                        onClick={() => handleDelete(backend.id)}
+                        onClick={() => handleDeleteClick(backend)}
                       >
                         <DeleteIcon />
                       </IconButton>
@@ -320,6 +334,25 @@ const Storage: React.FC = () => {
           <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
           <Button onClick={handleSubmit} variant="contained" disabled={!formData.name}>
             {editingBackend ? 'Update' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
+        <DialogTitle>Delete Storage Backend</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete <strong>{backendToDelete?.name}</strong>?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+            This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleDeleteConfirm} color="error" variant="contained">
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

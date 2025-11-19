@@ -7,6 +7,7 @@
 import React, { useState, useMemo } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider, CssBaseline } from '@mui/material';
+import { SnackbarProvider } from 'notistack';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { lightTheme, darkTheme } from './utils/theme';
 import MainLayout from './components/layout/MainLayout';
@@ -56,29 +57,38 @@ const AppContent: React.FC = () => {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Router>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <MainLayout darkMode={darkMode} toggleDarkMode={toggleDarkMode} />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<Dashboard />} />
-            <Route path="backups" element={<Backups />} />
-            <Route path="backups/create" element={<BackupWizard />} />
-            <Route path="backups/:backupId/restore" element={<RestoreWizard />} />
-            <Route path="vms" element={<VMs />} />
-            <Route path="containers" element={<Containers />} />
-            <Route path="storage" element={<Storage />} />
-            <Route path="schedules" element={<Schedules />} />
-            <Route path="admin" element={<Admin />} />
-          </Route>
-        </Routes>
-      </Router>
+      <SnackbarProvider
+        maxSnack={3}
+        anchorOrigin={{
+          vertical: 'bottom',
+          horizontal: 'right',
+        }}
+        autoHideDuration={3000}
+      >
+        <Router>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <MainLayout darkMode={darkMode} toggleDarkMode={toggleDarkMode} />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<Dashboard />} />
+              <Route path="backups" element={<Backups />} />
+              <Route path="backups/create" element={<BackupWizard />} />
+              <Route path="backups/:backupId/restore" element={<RestoreWizard />} />
+              <Route path="vms" element={<VMs />} />
+              <Route path="containers" element={<Containers />} />
+              <Route path="storage" element={<Storage />} />
+              <Route path="schedules" element={<Schedules />} />
+              <Route path="admin" element={<Admin />} />
+            </Route>
+          </Routes>
+        </Router>
+      </SnackbarProvider>
     </ThemeProvider>
   );
 };

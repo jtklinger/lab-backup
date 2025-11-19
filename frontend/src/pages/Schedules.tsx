@@ -41,10 +41,12 @@ import {
   Pause as DisableIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
+import { useSnackbar } from 'notistack';
 import api, { handleApiError } from '../services/api';
 import type { Schedule, VM, Container, StorageBackend } from '../types';
 
 const Schedules: React.FC = () => {
+  const { enqueueSnackbar } = useSnackbar();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [vms, setVMs] = useState<VM[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
@@ -53,6 +55,8 @@ const Schedules: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<Schedule | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [scheduleToDelete, setScheduleToDelete] = useState<Schedule | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -159,14 +163,23 @@ const Schedules: React.FC = () => {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Are you sure you want to delete this schedule?')) return;
+  const handleDeleteClick = (schedule: Schedule) => {
+    setScheduleToDelete(schedule);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!scheduleToDelete) return;
 
     try {
-      await api.delete(`/schedules/${id}`);
+      await api.delete(`/schedules/${scheduleToDelete.id}`);
+      enqueueSnackbar('Schedule deleted successfully', { variant: 'success' });
+      setDeleteDialogOpen(false);
+      setScheduleToDelete(null);
       await fetchSchedules();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to delete schedule', { variant: 'error' });
     }
   };
 
@@ -295,7 +308,7 @@ const Schedules: React.FC = () => {
                       <IconButton
                         size="small"
                         color="error"
-                        onClick={() => handleDelete(schedule.id)}
+                        onClick={() => handleDeleteClick(schedule)}
                       >
                         <DeleteIcon />
                       </IconButton>
@@ -437,6 +450,25 @@ const Schedules: React.FC = () => {
             disabled={!formData.name || !formData.cron_expression || (!formData.vm_id && !formData.container_id)}
           >
             {editingSchedule ? 'Update' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
+        <DialogTitle>Delete Schedule</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete <strong>{scheduleToDelete?.name}</strong>?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+            This action cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleDeleteConfirm} color="error" variant="contained">
+            Delete
           </Button>
         </DialogActions>
       </Dialog>
