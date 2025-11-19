@@ -53,6 +53,14 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class LoginResponse(BaseModel):
+    """Login response model with user data."""
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+
 async def _authenticate_user(
     form_data: OAuth2PasswordRequestForm,
     db: AsyncSession,
@@ -119,10 +127,14 @@ async def _authenticate_user(
     access_token = create_access_token(data={"sub": user.username})
     refresh_token = create_refresh_token(data={"sub": user.username})
 
+    # Refresh user to ensure all fields are loaded
+    await db.refresh(user)
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user": user
     }
 
 
@@ -136,13 +148,13 @@ async def token(
     return await _authenticate_user(form_data, db, request)
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=LoginResponse)
 async def login(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
-    """Authenticate user and return JWT tokens."""
+    """Authenticate user and return JWT tokens with user data."""
     return await _authenticate_user(form_data, db, request)
 
 
