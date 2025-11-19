@@ -209,7 +209,6 @@ class Container(Base):
     image: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     state: Mapped[str] = mapped_column(String(50), nullable=True)
     container_metadata: Mapped[Optional[dict]] = mapped_column('metadata', JSON, nullable=True)
-<<<<<<< HEAD
 
     # Compliance tracking (Issue #8)
     compliance_status: Mapped[Optional[str]] = mapped_column(
@@ -235,8 +234,6 @@ class Container(Base):
         nullable=True,
         comment='When compliance was last calculated'
     )
-=======
->>>>>>> claude/web-backup-feature-011CV2cxK9vxzSKFBVusLnNc
 
     # Relationships
     podman_host: Mapped["PodmanHost"] = relationship(back_populates="containers")
