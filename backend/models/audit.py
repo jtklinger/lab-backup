@@ -123,6 +123,7 @@ class AuditLog(Base):
     resource_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     resource_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     resource_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)  # Legacy field for backward compatibility
 
     # Request context
     ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True, index=True)
