@@ -16,7 +16,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.user import AuditLog
+from backend.models.audit import AuditLog
 
 logger = logging.getLogger(__name__)
 

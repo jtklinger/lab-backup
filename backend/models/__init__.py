@@ -2,8 +2,10 @@
 Database models package.
 """
 from backend.models.base import Base, get_db
-from backend.models.user import User, UserRole, APIToken, AuditLog
+from backend.models.user import User, UserRole, APIToken
+from backend.models.audit import AuditLog
 from backend.models.infrastructure import KVMHost, VM, PodmanHost, Container
+from backend.models.encryption import EncryptionKey
 from backend.models.storage import StorageBackend, StorageType
 from backend.models.backup import (
     BackupSchedule,
@@ -39,6 +41,8 @@ __all__ = [
     "VM",
     "PodmanHost",
     "Container",
+    # Encryption
+    "EncryptionKey",
     # Storage
     "StorageBackend",
     "StorageType",

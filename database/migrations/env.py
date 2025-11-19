@@ -14,8 +14,10 @@ from backend.core.config import settings
 from backend.models.base import Base
 
 # Import all models to ensure they're registered with Base
-from backend.models.user import User, APIToken, AuditLog
+from backend.models.user import User, APIToken
+from backend.models.audit import AuditLog
 from backend.models.infrastructure import KVMHost, VM, PodmanHost, Container
+from backend.models.encryption import EncryptionKey
 from backend.models.storage import StorageBackend
 from backend.models.backup import BackupSchedule, Backup, Job, JobLog
 from backend.models.notification import NotificationConfig, Notification
