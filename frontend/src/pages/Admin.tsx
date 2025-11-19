@@ -50,12 +50,16 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import api, { handleApiError } from '../services/api';
 import type { User, KVMHost, PodmanHost, AuditLog, PaginatedResponse } from '../types';
-import { UserRole, KVMAuthType, AuditSeverity } from '../types';
+import { UserRole, AuditSeverity } from '../types';
 import {
   createUserSchema,
   updateUserSchema,
+  kvmHostSchema,
+  podmanHostSchema,
   type CreateUserFormData,
   type UpdateUserFormData,
+  type KVMHostFormData,
+  type PodmanHostFormData,
 } from '../utils/validationSchemas';
 
 interface TabPanelProps {
@@ -469,25 +473,28 @@ const KVMHostsTab: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [hostToDelete, setHostToDelete] = useState<KVMHost | null>(null);
 
-  const [formData, setFormData] = useState<{
-    name: string;
-    hostname: string;
-    port: number;
-    username: string;
-    auth_type: typeof KVMAuthType[keyof typeof KVMAuthType];
-    ssh_key_path: string;
-    password: string;
-    is_active: boolean;
-  }>({
-    name: '',
-    hostname: '',
-    port: 22,
-    username: 'root',
-    auth_type: KVMAuthType.SSH_KEY,
-    ssh_key_path: '',
-    password: '',
-    is_active: true,
+  const {
+    register,
+    handleSubmit,
+    reset,
+    watch,
+    formState: { errors, isValid },
+  } = useForm<KVMHostFormData>({
+    resolver: zodResolver(kvmHostSchema),
+    mode: 'onChange',
+    defaultValues: {
+      name: '',
+      hostname: '',
+      port: 22,
+      username: 'root',
+      auth_type: 'SSH_KEY' as const,
+      ssh_key_path: '',
+      password: '',
+      is_active: true,
+    },
   });
+
+  const authType = watch('auth_type');
 
   const fetchHosts = async () => {
     try {
@@ -507,12 +514,12 @@ const KVMHostsTab: React.FC = () => {
 
   const handleAdd = () => {
     setEditingHost(null);
-    setFormData({
+    reset({
       name: '',
       hostname: '',
       port: 22,
       username: 'root',
-      auth_type: KVMAuthType.SSH_KEY,
+      auth_type: 'SSH_KEY' as const,
       ssh_key_path: '',
       password: '',
       is_active: true,
@@ -522,7 +529,7 @@ const KVMHostsTab: React.FC = () => {
 
   const handleEdit = (host: KVMHost) => {
     setEditingHost(host);
-    setFormData({
+    reset({
       name: host.name,
       hostname: host.hostname,
       port: host.port,
@@ -535,34 +542,20 @@ const KVMHostsTab: React.FC = () => {
     setDialogOpen(true);
   };
 
-  const handleSubmit = async () => {
+  const onSubmit = async (data: KVMHostFormData) => {
     try {
-      const payload: any = {
-        name: formData.name,
-        hostname: formData.hostname,
-        port: formData.port,
-        username: formData.username,
-        auth_type: formData.auth_type,
-        is_active: formData.is_active,
-      };
-
-      if (formData.auth_type === KVMAuthType.SSH_KEY) {
-        payload.ssh_key_path = formData.ssh_key_path;
-      } else {
-        if (formData.password) {
-          payload.password = formData.password;
-        }
-      }
-
       if (editingHost) {
-        await api.put(`/kvm-hosts/${editingHost.id}`, payload);
+        await api.put(`/kvm-hosts/${editingHost.id}`, data);
+        enqueueSnackbar('KVM host updated successfully', { variant: 'success' });
       } else {
-        await api.post('/kvm-hosts', payload);
+        await api.post('/kvm-hosts', data);
+        enqueueSnackbar('KVM host created successfully', { variant: 'success' });
       }
       setDialogOpen(false);
       await fetchHosts();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to save KVM host', { variant: 'error' });
     }
   };
 
@@ -737,104 +730,112 @@ const KVMHostsTab: React.FC = () => {
 
       {/* KVM Host Dialog */}
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>
-          {editingHost ? 'Edit KVM Host' : 'Add KVM Host'}
-        </DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                required
-              />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 8 }}>
-              <TextField
-                fullWidth
-                label="Hostname"
-                value={formData.hostname}
-                onChange={(e) => setFormData({ ...formData, hostname: e.target.value })}
-                required
-              />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 4 }}>
-              <TextField
-                fullWidth
-                label="Port"
-                type="number"
-                value={formData.port}
-                onChange={(e) => setFormData({ ...formData, port: parseInt(e.target.value) })}
-                required
-              />
-            </Grid>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Username"
-                value={formData.username}
-                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                required
-              />
-            </Grid>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                select
-                label="Authentication Type"
-                value={formData.auth_type}
-                onChange={(e) => setFormData({ ...formData, auth_type: e.target.value as typeof KVMAuthType[keyof typeof KVMAuthType] })}
-                required
-              >
-                <MenuItem value={KVMAuthType.SSH_KEY}>SSH Key</MenuItem>
-                <MenuItem value={KVMAuthType.PASSWORD}>Password</MenuItem>
-              </TextField>
-            </Grid>
-            {formData.auth_type === KVMAuthType.SSH_KEY ? (
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <DialogTitle>
+            {editingHost ? 'Edit KVM Host' : 'Add KVM Host'}
+          </DialogTitle>
+          <DialogContent>
+            <Grid container spacing={2} sx={{ mt: 1 }}>
               <Grid size={{ xs: 12 }}>
                 <TextField
                   fullWidth
-                  label="SSH Key Path"
-                  value={formData.ssh_key_path}
-                  onChange={(e) => setFormData({ ...formData, ssh_key_path: e.target.value })}
+                  label="Name"
                   required
-                  helperText="Path to SSH private key file on the server"
+                  error={!!errors.name}
+                  helperText={errors.name?.message}
+                  {...register('name')}
                 />
               </Grid>
-            ) : (
+              <Grid size={{ xs: 12, sm: 8 }}>
+                <TextField
+                  fullWidth
+                  label="Hostname"
+                  required
+                  error={!!errors.hostname}
+                  helperText={errors.hostname?.message}
+                  {...register('hostname')}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 4 }}>
+                <TextField
+                  fullWidth
+                  label="Port"
+                  type="number"
+                  required
+                  error={!!errors.port}
+                  helperText={errors.port?.message}
+                  {...register('port', { valueAsNumber: true })}
+                />
+              </Grid>
               <Grid size={{ xs: 12 }}>
                 <TextField
                   fullWidth
-                  label="Password"
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  required={!editingHost}
-                  helperText={editingHost ? 'Leave blank to keep current password' : ''}
+                  label="Username"
+                  required
+                  error={!!errors.username}
+                  helperText={errors.username?.message}
+                  {...register('username')}
                 />
               </Grid>
-            )}
-            <Grid size={{ xs: 12 }}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formData.is_active}
-                    onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  select
+                  label="Authentication Type"
+                  required
+                  defaultValue="SSH_KEY"
+                  error={!!errors.auth_type}
+                  helperText={errors.auth_type?.message}
+                  {...register('auth_type')}
+                >
+                  <MenuItem value="SSH_KEY">SSH Key</MenuItem>
+                  <MenuItem value="PASSWORD">Password</MenuItem>
+                </TextField>
+              </Grid>
+              {authType === 'SSH_KEY' ? (
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    label="SSH Key Path"
+                    required
+                    error={!!errors.ssh_key_path}
+                    helperText={errors.ssh_key_path?.message || 'Path to SSH private key file on the server'}
+                    {...register('ssh_key_path')}
                   />
-                }
-                label="Active"
-              />
+                </Grid>
+              ) : (
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    label="Password"
+                    type="password"
+                    required={!editingHost}
+                    error={!!errors.password}
+                    helperText={errors.password?.message || (editingHost ? 'Leave blank to keep current password' : '')}
+                    {...register('password')}
+                  />
+                </Grid>
+              )}
+              <Grid size={{ xs: 12 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      defaultChecked
+                      {...register('is_active')}
+                    />
+                  }
+                  label="Active"
+                />
+              </Grid>
             </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} variant="contained" disabled={!formData.name || !formData.hostname}>
-            {editingHost ? 'Update' : 'Create'}
-          </Button>
-        </DialogActions>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
+            <Button type="submit" variant="contained" disabled={!isValid}>
+              {editingHost ? 'Update' : 'Create'}
+            </Button>
+          </DialogActions>
+        </form>
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
@@ -873,13 +874,22 @@ const PodmanHostsTab: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [hostToDelete, setHostToDelete] = useState<PodmanHost | null>(null);
 
-  const [formData, setFormData] = useState({
-    name: '',
-    hostname: '',
-    port: 22,
-    username: 'root',
-    ssh_key_path: '',
-    is_active: true,
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isValid },
+  } = useForm<PodmanHostFormData>({
+    resolver: zodResolver(podmanHostSchema),
+    mode: 'onChange',
+    defaultValues: {
+      name: '',
+      hostname: '',
+      port: 22,
+      username: 'root',
+      ssh_key_path: '',
+      is_active: true,
+    },
   });
 
   const fetchHosts = async () => {
@@ -900,7 +910,7 @@ const PodmanHostsTab: React.FC = () => {
 
   const handleAdd = () => {
     setEditingHost(null);
-    setFormData({
+    reset({
       name: '',
       hostname: '',
       port: 22,
@@ -913,7 +923,7 @@ const PodmanHostsTab: React.FC = () => {
 
   const handleEdit = (host: PodmanHost) => {
     setEditingHost(host);
-    setFormData({
+    reset({
       name: host.name,
       hostname: host.hostname,
       port: host.port,
@@ -924,17 +934,20 @@ const PodmanHostsTab: React.FC = () => {
     setDialogOpen(true);
   };
 
-  const handleSubmit = async () => {
+  const onSubmit = async (data: PodmanHostFormData) => {
     try {
       if (editingHost) {
-        await api.put(`/podman-hosts/${editingHost.id}`, formData);
+        await api.put(`/podman-hosts/${editingHost.id}`, data);
+        enqueueSnackbar('Podman host updated successfully', { variant: 'success' });
       } else {
-        await api.post('/podman-hosts', formData);
+        await api.post('/podman-hosts', data);
+        enqueueSnackbar('Podman host created successfully', { variant: 'success' });
       }
       setDialogOpen(false);
       await fetchHosts();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to save Podman host', { variant: 'error' });
     }
   };
 
@@ -1099,77 +1112,83 @@ const PodmanHostsTab: React.FC = () => {
 
       {/* Podman Host Dialog */}
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>
-          {editingHost ? 'Edit Podman Host' : 'Add Podman Host'}
-        </DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                required
-              />
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <DialogTitle>
+            {editingHost ? 'Edit Podman Host' : 'Add Podman Host'}
+          </DialogTitle>
+          <DialogContent>
+            <Grid container spacing={2} sx={{ mt: 1 }}>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  label="Name"
+                  required
+                  error={!!errors.name}
+                  helperText={errors.name?.message}
+                  {...register('name')}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 8 }}>
+                <TextField
+                  fullWidth
+                  label="Hostname"
+                  required
+                  error={!!errors.hostname}
+                  helperText={errors.hostname?.message}
+                  {...register('hostname')}
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 4 }}>
+                <TextField
+                  fullWidth
+                  label="Port"
+                  type="number"
+                  required
+                  error={!!errors.port}
+                  helperText={errors.port?.message}
+                  {...register('port', { valueAsNumber: true })}
+                />
+              </Grid>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  label="Username"
+                  required
+                  error={!!errors.username}
+                  helperText={errors.username?.message}
+                  {...register('username')}
+                />
+              </Grid>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  label="SSH Key Path"
+                  required
+                  error={!!errors.ssh_key_path}
+                  helperText={errors.ssh_key_path?.message || 'Path to SSH private key file on the server'}
+                  {...register('ssh_key_path')}
+                />
+              </Grid>
+              <Grid size={{ xs: 12 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      defaultChecked
+                      {...register('is_active')}
+                    />
+                  }
+                  label="Active"
+                />
+              </Grid>
             </Grid>
-            <Grid size={{ xs: 12, sm: 8 }}>
-              <TextField
-                fullWidth
-                label="Hostname"
-                value={formData.hostname}
-                onChange={(e) => setFormData({ ...formData, hostname: e.target.value })}
-                required
-              />
-            </Grid>
-            <Grid size={{ xs: 12, sm: 4 }}>
-              <TextField
-                fullWidth
-                label="Port"
-                type="number"
-                value={formData.port}
-                onChange={(e) => setFormData({ ...formData, port: parseInt(e.target.value) })}
-                required
-              />
-            </Grid>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Username"
-                value={formData.username}
-                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                required
-              />
-            </Grid>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="SSH Key Path"
-                value={formData.ssh_key_path}
-                onChange={(e) => setFormData({ ...formData, ssh_key_path: e.target.value })}
-                required
-                helperText="Path to SSH private key file on the server"
-              />
-            </Grid>
-            <Grid size={{ xs: 12 }}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formData.is_active}
-                    onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-                  />
-                }
-                label="Active"
-              />
-            </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} variant="contained" disabled={!formData.name || !formData.hostname}>
-            {editingHost ? 'Update' : 'Create'}
-          </Button>
-        </DialogActions>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
+            <Button type="submit" variant="contained" disabled={!isValid}>
+              {editingHost ? 'Update' : 'Create'}
+            </Button>
+          </DialogActions>
+        </form>
       </Dialog>
 
       {/* Delete Confirmation Dialog */}

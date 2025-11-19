@@ -42,8 +42,11 @@ import {
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import { useSnackbar } from 'notistack';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import api, { handleApiError } from '../services/api';
 import type { Schedule, VM, Container, StorageBackend } from '../types';
+import { scheduleSchema, type ScheduleFormData } from '../utils/validationSchemas';
 
 const Schedules: React.FC = () => {
   const { enqueueSnackbar } = useSnackbar();
@@ -58,15 +61,25 @@ const Schedules: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [scheduleToDelete, setScheduleToDelete] = useState<Schedule | null>(null);
 
-  const [formData, setFormData] = useState({
-    name: '',
-    cron_expression: '0 2 * * *', // Daily at 2 AM
-    vm_id: null as number | null,
-    container_id: null as number | null,
-    storage_backend_id: 1,
-    retention_count: 7,
-    compression_algorithm: 'gzip',
-    is_active: true,
+  const {
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    formState: { errors, isValid },
+  } = useForm<ScheduleFormData>({
+    resolver: zodResolver(scheduleSchema),
+    mode: 'onChange',
+    defaultValues: {
+      name: '',
+      cron_expression: '0 2 * * *',
+      vm_id: null,
+      container_id: null,
+      storage_backend_id: 1,
+      retention_count: 7,
+      compression_algorithm: 'gzip',
+      is_active: true,
+    },
   });
 
   // Common cron patterns
@@ -112,7 +125,7 @@ const Schedules: React.FC = () => {
 
   const handleAdd = () => {
     setEditingSchedule(null);
-    setFormData({
+    reset({
       name: '',
       cron_expression: '0 2 * * *',
       vm_id: null,
@@ -127,7 +140,7 @@ const Schedules: React.FC = () => {
 
   const handleEdit = (schedule: Schedule) => {
     setEditingSchedule(schedule);
-    setFormData({
+    reset({
       name: schedule.name,
       cron_expression: schedule.cron_expression,
       vm_id: schedule.vm_id || null,
@@ -140,17 +153,20 @@ const Schedules: React.FC = () => {
     setDialogOpen(true);
   };
 
-  const handleSubmit = async () => {
+  const onSubmit = async (data: ScheduleFormData) => {
     try {
       if (editingSchedule) {
-        await api.put(`/schedules/${editingSchedule.id}`, formData);
+        await api.put(`/schedules/${editingSchedule.id}`, data);
+        enqueueSnackbar('Schedule updated successfully', { variant: 'success' });
       } else {
-        await api.post('/schedules', formData);
+        await api.post('/schedules', data);
+        enqueueSnackbar('Schedule created successfully', { variant: 'success' });
       }
       setDialogOpen(false);
       await fetchSchedules();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to save schedule', { variant: 'error' });
     }
   };
 
@@ -323,135 +339,158 @@ const Schedules: React.FC = () => {
 
       {/* Add/Edit Dialog */}
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="md" fullWidth>
-        <DialogTitle>
-          {editingSchedule ? 'Edit Schedule' : 'Add Schedule'}
-        </DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Schedule Name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                required
-              />
-            </Grid>
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <DialogTitle>
+            {editingSchedule ? 'Edit Schedule' : 'Add Schedule'}
+          </DialogTitle>
+          <DialogContent>
+            <Grid container spacing={2} sx={{ mt: 1 }}>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  label="Schedule Name"
+                  required
+                  error={!!errors.name}
+                  helperText={errors.name?.message}
+                  {...register('name')}
+                />
+              </Grid>
 
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                fullWidth
-                select
-                label="Target VM"
-                value={formData.vm_id || ''}
-                onChange={(e) => setFormData({ ...formData, vm_id: e.target.value ? Number(e.target.value) : null, container_id: null })}
-                helperText="Select VM or Container (not both)"
-              >
-                <MenuItem value="">None</MenuItem>
-                {vms.map((vm) => (
-                  <MenuItem key={vm.id} value={vm.id}>
-                    {vm.name}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Grid>
+              <Grid size={{ xs: 12, md: 6 }}>
+                <TextField
+                  fullWidth
+                  select
+                  label="Target VM"
+                  defaultValue=""
+                  error={!!errors.vm_id}
+                  helperText={errors.vm_id?.message || 'Select VM or Container (not both)'}
+                  {...register('vm_id', {
+                    setValueAs: (v) => (v === '' ? null : Number(v)),
+                    onChange: (e) => {
+                      if (e.target.value) {
+                        setValue('container_id', null);
+                      }
+                    },
+                  })}
+                >
+                  <MenuItem value="">None</MenuItem>
+                  {vms.map((vm) => (
+                    <MenuItem key={vm.id} value={vm.id}>
+                      {vm.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
 
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                fullWidth
-                select
-                label="Target Container"
-                value={formData.container_id || ''}
-                onChange={(e) => setFormData({ ...formData, container_id: e.target.value ? Number(e.target.value) : null, vm_id: null })}
-                helperText="Select VM or Container (not both)"
-              >
-                <MenuItem value="">None</MenuItem>
-                {containers.map((container) => (
-                  <MenuItem key={container.id} value={container.id}>
-                    {container.name}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Grid>
+              <Grid size={{ xs: 12, md: 6 }}>
+                <TextField
+                  fullWidth
+                  select
+                  label="Target Container"
+                  defaultValue=""
+                  error={!!errors.container_id}
+                  helperText={errors.container_id?.message || 'Select VM or Container (not both)'}
+                  {...register('container_id', {
+                    setValueAs: (v) => (v === '' ? null : Number(v)),
+                    onChange: (e) => {
+                      if (e.target.value) {
+                        setValue('vm_id', null);
+                      }
+                    },
+                  })}
+                >
+                  <MenuItem value="">None</MenuItem>
+                  {containers.map((container) => (
+                    <MenuItem key={container.id} value={container.id}>
+                      {container.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
 
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                fullWidth
-                select
-                label="Cron Preset"
-                onChange={(e) => setFormData({ ...formData, cron_expression: e.target.value })}
-                helperText="Or enter custom cron expression below"
-              >
-                {cronPresets.map((preset) => (
-                  <MenuItem key={preset.value} value={preset.value}>
-                    {preset.label}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Grid>
+              <Grid size={{ xs: 12, md: 6 }}>
+                <TextField
+                  fullWidth
+                  select
+                  label="Cron Preset"
+                  defaultValue=""
+                  onChange={(e) => setValue('cron_expression', e.target.value, { shouldValidate: true })}
+                  helperText="Or enter custom cron expression below"
+                >
+                  <MenuItem value="">Custom</MenuItem>
+                  {cronPresets.map((preset) => (
+                    <MenuItem key={preset.value} value={preset.value}>
+                      {preset.label}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
 
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                fullWidth
-                label="Cron Expression"
-                value={formData.cron_expression}
-                onChange={(e) => setFormData({ ...formData, cron_expression: e.target.value })}
-                helperText="Format: minute hour day month weekday"
-                required
-              />
-            </Grid>
+              <Grid size={{ xs: 12, md: 6 }}>
+                <TextField
+                  fullWidth
+                  label="Cron Expression"
+                  required
+                  error={!!errors.cron_expression}
+                  helperText={errors.cron_expression?.message || 'Format: minute hour day month weekday'}
+                  {...register('cron_expression')}
+                />
+              </Grid>
 
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                fullWidth
-                select
-                label="Storage Backend"
-                value={formData.storage_backend_id}
-                onChange={(e) => setFormData({ ...formData, storage_backend_id: Number(e.target.value) })}
-                required
-              >
-                {storageBackends.map((backend) => (
-                  <MenuItem key={backend.id} value={backend.id}>
-                    {backend.name}
-                  </MenuItem>
-                ))}
-              </TextField>
-            </Grid>
+              <Grid size={{ xs: 12, md: 6 }}>
+                <TextField
+                  fullWidth
+                  select
+                  label="Storage Backend"
+                  required
+                  defaultValue={1}
+                  error={!!errors.storage_backend_id}
+                  helperText={errors.storage_backend_id?.message}
+                  {...register('storage_backend_id', { valueAsNumber: true })}
+                >
+                  {storageBackends.map((backend) => (
+                    <MenuItem key={backend.id} value={backend.id}>
+                      {backend.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
 
-            <Grid size={{ xs: 12, md: 6 }}>
-              <TextField
-                fullWidth
-                type="number"
-                label="Retention Count"
-                value={formData.retention_count}
-                onChange={(e) => setFormData({ ...formData, retention_count: Number(e.target.value) })}
-                helperText="Number of backups to keep (0 = unlimited)"
-              />
-            </Grid>
+              <Grid size={{ xs: 12, md: 6 }}>
+                <TextField
+                  fullWidth
+                  type="number"
+                  label="Retention Count"
+                  error={!!errors.retention_count}
+                  helperText={errors.retention_count?.message || 'Number of backups to keep (0 = unlimited)'}
+                  {...register('retention_count', { valueAsNumber: true })}
+                />
+              </Grid>
 
-            <Grid size={{ xs: 12 }}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formData.is_active}
-                    onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-                  />
-                }
-                label="Active"
-              />
+              <Grid size={{ xs: 12 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      defaultChecked
+                      {...register('is_active')}
+                    />
+                  }
+                  label="Active"
+                />
+              </Grid>
             </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
-          <Button
-            onClick={handleSubmit}
-            variant="contained"
-            disabled={!formData.name || !formData.cron_expression || (!formData.vm_id && !formData.container_id)}
-          >
-            {editingSchedule ? 'Update' : 'Create'}
-          </Button>
-        </DialogActions>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
+            <Button
+              type="submit"
+              variant="contained"
+              disabled={!isValid}
+            >
+              {editingSchedule ? 'Update' : 'Create'}
+            </Button>
+          </DialogActions>
+        </form>
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
