@@ -18,34 +18,36 @@ import {
   CircularProgress,
 } from '@mui/material';
 import { Backup as BackupIcon } from '@mui/icons-material';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import { useAuth } from '../contexts/AuthContext';
-import type { LoginRequest } from '../types';
+import { loginSchema, type LoginFormData } from '../utils/validationSchemas';
 
 const Login: React.FC = () => {
-  const [credentials, setCredentials] = useState<LoginRequest>({
-    username: '',
-    password: '',
-  });
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setCredentials({
-      ...credentials,
-      [e.target.name]: e.target.value,
-    });
-    setError(null);
-  };
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isValid },
+  } = useForm<LoginFormData>({
+    resolver: zodResolver(loginSchema),
+    mode: 'onChange',
+    defaultValues: {
+      username: '',
+      password: '',
+    },
+  });
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const onSubmit = async (data: LoginFormData) => {
     setError(null);
     setIsLoading(true);
 
     try {
-      await login(credentials);
+      await login(data);
       navigate('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
@@ -89,39 +91,39 @@ const Login: React.FC = () => {
               </Alert>
             )}
 
-            <Box component="form" onSubmit={handleSubmit} noValidate>
+            <Box component="form" onSubmit={handleSubmit(onSubmit)} noValidate>
               <TextField
                 margin="normal"
                 required
                 fullWidth
                 id="username"
                 label="Username"
-                name="username"
                 autoComplete="username"
                 autoFocus
-                value={credentials.username}
-                onChange={handleChange}
                 disabled={isLoading}
+                error={!!errors.username}
+                helperText={errors.username?.message}
+                {...register('username')}
               />
               <TextField
                 margin="normal"
                 required
                 fullWidth
-                name="password"
                 label="Password"
                 type="password"
                 id="password"
                 autoComplete="current-password"
-                value={credentials.password}
-                onChange={handleChange}
                 disabled={isLoading}
+                error={!!errors.password}
+                helperText={errors.password?.message}
+                {...register('password')}
               />
               <Button
                 type="submit"
                 fullWidth
                 variant="contained"
                 sx={{ mt: 3, mb: 2 }}
-                disabled={isLoading || !credentials.username || !credentials.password}
+                disabled={isLoading || !isValid}
               >
                 {isLoading ? <CircularProgress size={24} /> : 'Sign In'}
               </Button>
