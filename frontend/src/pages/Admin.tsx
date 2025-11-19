@@ -46,9 +46,17 @@ import {
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import { useSnackbar } from 'notistack';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import api, { handleApiError } from '../services/api';
 import type { User, KVMHost, PodmanHost, AuditLog, PaginatedResponse } from '../types';
 import { UserRole, KVMAuthType, AuditSeverity } from '../types';
+import {
+  createUserSchema,
+  updateUserSchema,
+  type CreateUserFormData,
+  type UpdateUserFormData,
+} from '../utils/validationSchemas';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -120,18 +128,21 @@ const UsersTab: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
 
-  const [formData, setFormData] = useState<{
-    username: string;
-    email: string;
-    password: string;
-    role: typeof UserRole[keyof typeof UserRole];
-    is_active: boolean;
-  }>({
-    username: '',
-    email: '',
-    password: '',
-    role: UserRole.VIEWER,
-    is_active: true,
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isValid },
+  } = useForm<CreateUserFormData | UpdateUserFormData>({
+    resolver: zodResolver(editingUser ? updateUserSchema : createUserSchema),
+    mode: 'onChange',
+    defaultValues: {
+      username: '',
+      email: '',
+      password: '',
+      role: 'VIEWER' as const,
+      is_active: true,
+    },
   });
 
   const fetchUsers = async () => {
@@ -152,11 +163,11 @@ const UsersTab: React.FC = () => {
 
   const handleAdd = () => {
     setEditingUser(null);
-    setFormData({
+    reset({
       username: '',
       email: '',
       password: '',
-      role: UserRole.VIEWER,
+      role: 'VIEWER' as const,
       is_active: true,
     });
     setDialogOpen(true);
@@ -164,7 +175,7 @@ const UsersTab: React.FC = () => {
 
   const handleEdit = (user: User) => {
     setEditingUser(user);
-    setFormData({
+    reset({
       username: user.username,
       email: user.email,
       password: '',
@@ -174,17 +185,20 @@ const UsersTab: React.FC = () => {
     setDialogOpen(true);
   };
 
-  const handleSubmit = async () => {
+  const onSubmit = async (data: CreateUserFormData | UpdateUserFormData) => {
     try {
       if (editingUser) {
-        await api.put(`/users/${editingUser.id}`, formData);
+        await api.put(`/users/${editingUser.id}`, data);
+        enqueueSnackbar('User updated successfully', { variant: 'success' });
       } else {
-        await api.post('/users', formData);
+        await api.post('/users', data);
+        enqueueSnackbar('User created successfully', { variant: 'success' });
       }
       setDialogOpen(false);
       await fetchUsers();
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to save user', { variant: 'error' });
     }
   };
 
@@ -342,75 +356,81 @@ const UsersTab: React.FC = () => {
 
       {/* User Dialog */}
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>
-          {editingUser ? 'Edit User' : 'Add User'}
-        </DialogTitle>
-        <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Username"
-                value={formData.username}
-                onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                required
-                disabled={!!editingUser}
-              />
+        <form onSubmit={handleSubmit(onSubmit)}>
+          <DialogTitle>
+            {editingUser ? 'Edit User' : 'Add User'}
+          </DialogTitle>
+          <DialogContent>
+            <Grid container spacing={2} sx={{ mt: 1 }}>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  label="Username"
+                  required
+                  disabled={!!editingUser}
+                  error={!!errors.username}
+                  helperText={errors.username?.message}
+                  {...register('username')}
+                />
+              </Grid>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  label="Email"
+                  type="email"
+                  required
+                  error={!!errors.email}
+                  helperText={errors.email?.message}
+                  {...register('email')}
+                />
+              </Grid>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  label="Password"
+                  type="password"
+                  required={!editingUser}
+                  error={!!errors.password}
+                  helperText={errors.password?.message || (editingUser ? 'Leave blank to keep current password' : '')}
+                  {...register('password')}
+                />
+              </Grid>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  select
+                  label="Role"
+                  required
+                  defaultValue="VIEWER"
+                  error={!!errors.role}
+                  helperText={errors.role?.message}
+                  {...register('role')}
+                >
+                  <MenuItem value="ADMIN">Admin</MenuItem>
+                  <MenuItem value="OPERATOR">Operator</MenuItem>
+                  <MenuItem value="VIEWER">Viewer</MenuItem>
+                </TextField>
+              </Grid>
+              <Grid size={{ xs: 12 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      defaultChecked
+                      {...register('is_active')}
+                    />
+                  }
+                  label="Active"
+                />
+              </Grid>
             </Grid>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Email"
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                required
-              />
-            </Grid>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                label="Password"
-                type="password"
-                value={formData.password}
-                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                required={!editingUser}
-                helperText={editingUser ? 'Leave blank to keep current password' : ''}
-              />
-            </Grid>
-            <Grid size={{ xs: 12 }}>
-              <TextField
-                fullWidth
-                select
-                label="Role"
-                value={formData.role}
-                onChange={(e) => setFormData({ ...formData, role: e.target.value as typeof UserRole[keyof typeof UserRole] })}
-                required
-              >
-                <MenuItem value={UserRole.ADMIN}>Admin</MenuItem>
-                <MenuItem value={UserRole.OPERATOR}>Operator</MenuItem>
-                <MenuItem value={UserRole.VIEWER}>Viewer</MenuItem>
-              </TextField>
-            </Grid>
-            <Grid size={{ xs: 12 }}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={formData.is_active}
-                    onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-                  />
-                }
-                label="Active"
-              />
-            </Grid>
-          </Grid>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} variant="contained" disabled={!formData.username || !formData.email}>
-            {editingUser ? 'Update' : 'Create'}
-          </Button>
-        </DialogActions>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
+            <Button type="submit" variant="contained" disabled={!isValid}>
+              {editingUser ? 'Update' : 'Create'}
+            </Button>
+          </DialogActions>
+        </form>
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
