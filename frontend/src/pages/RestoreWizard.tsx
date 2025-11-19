@@ -31,24 +31,18 @@ import {
   RestorePage as RestoreIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
+import { useSnackbar } from 'notistack';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
 import api, { handleApiError } from '../services/api';
 import type { Backup, KVMHost, PodmanHost } from '../types';
-
-interface RestoreFormData {
-  // Step 1: Restore options
-  restoreType: 'original' | 'new';
-  verifyBeforeRestore: boolean;
-
-  // Step 2: Target selection (for 'new' restore)
-  targetKvmHostId: number | null;
-  targetPodmanHostId: number | null;
-  newName: string;
-}
+import { restoreWizardSchema, type RestoreWizardFormData } from '../utils/validationSchemas';
 
 const steps = ['Restore Options', 'Select Target', 'Review & Confirm'];
 
 const RestoreWizard: React.FC = () => {
   const navigate = useNavigate();
+  const { enqueueSnackbar } = useSnackbar();
   const { backupId } = useParams<{ backupId: string }>();
   const [activeStep, setActiveStep] = useState(0);
   const [backup, setBackup] = useState<Backup | null>(null);
@@ -58,13 +52,26 @@ const RestoreWizard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [formData, setFormData] = useState<RestoreFormData>({
-    restoreType: 'original',
-    verifyBeforeRestore: true,
-    targetKvmHostId: null,
-    targetPodmanHostId: null,
-    newName: '',
+  const {
+    register,
+    handleSubmit,
+    watch,
+    setValue,
+    trigger,
+    formState: { errors },
+  } = useForm<RestoreWizardFormData>({
+    resolver: zodResolver(restoreWizardSchema),
+    mode: 'onChange',
+    defaultValues: {
+      restoreType: 'original',
+      verifyBeforeRestore: true,
+      targetKvmHostId: null,
+      targetPodmanHostId: null,
+      newName: '',
+    },
   });
+
+  const formData = watch();
 
   useEffect(() => {
     if (backupId) {
@@ -87,10 +94,7 @@ const RestoreWizard: React.FC = () => {
 
       // Set default new name
       const sourceName = backupResp.data.vm_name || backupResp.data.container_name || 'backup';
-      setFormData(prev => ({
-        ...prev,
-        newName: `${sourceName}-restored-${Date.now()}`,
-      }));
+      setValue('newName', `${sourceName}-restored-${Date.now()}`);
     } catch (err) {
       setError(handleApiError(err));
     } finally {
@@ -98,10 +102,16 @@ const RestoreWizard: React.FC = () => {
     }
   };
 
-  const handleNext = () => {
-    if (validateStep(activeStep)) {
+  const handleNext = async () => {
+    // Trigger validation for current step fields
+    const fieldsToValidate = getStepFields(activeStep);
+    const isValid = await trigger(fieldsToValidate as any);
+
+    if (isValid) {
       setActiveStep((prev) => prev + 1);
       setError(null);
+    } else {
+      setError('Please fix the errors before continuing');
     }
   };
 
@@ -110,57 +120,46 @@ const RestoreWizard: React.FC = () => {
     setError(null);
   };
 
-  const validateStep = (step: number): boolean => {
+  const getStepFields = (step: number): string[] => {
     switch (step) {
+      case 0: // Restore options
+        return ['restoreType', 'verifyBeforeRestore'];
       case 1: // Target selection
-        if (formData.restoreType === 'new') {
-          if (backup?.vm_id && !formData.targetKvmHostId) {
-            setError('Please select a target KVM host');
-            return false;
-          }
-          if (backup?.container_id && !formData.targetPodmanHostId) {
-            setError('Please select a target Podman host');
-            return false;
-          }
-          if (!formData.newName.trim()) {
-            setError('Please enter a name for the restored resource');
-            return false;
-          }
-        }
-        return true;
-
+        return ['targetKvmHostId', 'targetPodmanHostId', 'newName'];
       default:
-        return true;
+        return [];
     }
   };
 
-  const handleSubmit = async () => {
+  const onSubmit = async (data: RestoreWizardFormData) => {
     try {
       setIsSubmitting(true);
       setError(null);
 
       const payload: any = {
         backup_id: Number(backupId),
-        verify_before_restore: formData.verifyBeforeRestore,
+        verify_before_restore: data.verifyBeforeRestore,
       };
 
-      if (formData.restoreType === 'new') {
+      if (data.restoreType === 'new') {
         payload.restore_to_new = true;
-        payload.new_name = formData.newName;
+        payload.new_name = data.newName;
 
         if (backup?.vm_id) {
-          payload.target_kvm_host_id = formData.targetKvmHostId;
+          payload.target_kvm_host_id = data.targetKvmHostId;
         } else if (backup?.container_id) {
-          payload.target_podman_host_id = formData.targetPodmanHostId;
+          payload.target_podman_host_id = data.targetPodmanHostId;
         }
       }
 
       await api.post('/backups/restore', payload);
+      enqueueSnackbar('Restore initiated successfully', { variant: 'success' });
 
       // Navigate back to backups page
       navigate('/backups');
     } catch (err) {
       setError(handleApiError(err));
+      enqueueSnackbar('Failed to initiate restore', { variant: 'error' });
     } finally {
       setIsSubmitting(false);
     }
@@ -241,8 +240,8 @@ const RestoreWizard: React.FC = () => {
                   fullWidth
                   select
                   label="Restore Type"
-                  value={formData.restoreType}
-                  onChange={(e) => setFormData({ ...formData, restoreType: e.target.value as 'original' | 'new' })}
+                  defaultValue="original"
+                  {...register('restoreType')}
                 >
                   <MenuItem value="original">Restore to Original Location</MenuItem>
                   <MenuItem value="new">Restore to New Location</MenuItem>
@@ -253,8 +252,8 @@ const RestoreWizard: React.FC = () => {
                 <FormControlLabel
                   control={
                     <Switch
-                      checked={formData.verifyBeforeRestore}
-                      onChange={(e) => setFormData({ ...formData, verifyBeforeRestore: e.target.checked })}
+                      defaultChecked={true}
+                      {...register('verifyBeforeRestore')}
                     />
                   }
                   label="Verify backup integrity before restoring"
@@ -300,10 +299,10 @@ const RestoreWizard: React.FC = () => {
                 <TextField
                   fullWidth
                   label="New Name"
-                  value={formData.newName}
-                  onChange={(e) => setFormData({ ...formData, newName: e.target.value })}
                   required
-                  helperText={`Name for the restored ${backup.vm_id ? 'VM' : 'container'}`}
+                  error={!!errors.newName}
+                  helperText={errors.newName?.message || `Name for the restored ${backup.vm_id ? 'VM' : 'container'}`}
+                  {...register('newName')}
                 />
               </Grid>
 
@@ -313,10 +312,12 @@ const RestoreWizard: React.FC = () => {
                     fullWidth
                     select
                     label="Target KVM Host"
-                    value={formData.targetKvmHostId || ''}
-                    onChange={(e) => setFormData({ ...formData, targetKvmHostId: Number(e.target.value) })}
-                    helperText="Select the KVM host where the VM will be restored"
+                    defaultValue=""
+                    error={!!errors.targetKvmHostId}
+                    helperText={errors.targetKvmHostId?.message || "Select the KVM host where the VM will be restored"}
+                    {...register('targetKvmHostId', { setValueAs: (v) => (v === '' ? null : Number(v)) })}
                   >
+                    <MenuItem value="">Select a KVM host</MenuItem>
                     {kvmHosts.map((host) => (
                       <MenuItem key={host.id} value={host.id}>
                         {host.name} ({host.hostname})
@@ -332,10 +333,12 @@ const RestoreWizard: React.FC = () => {
                     fullWidth
                     select
                     label="Target Podman Host"
-                    value={formData.targetPodmanHostId || ''}
-                    onChange={(e) => setFormData({ ...formData, targetPodmanHostId: Number(e.target.value) })}
-                    helperText="Select the Podman host where the container will be restored"
+                    defaultValue=""
+                    error={!!errors.targetPodmanHostId}
+                    helperText={errors.targetPodmanHostId?.message || "Select the Podman host where the container will be restored"}
+                    {...register('targetPodmanHostId', { setValueAs: (v) => (v === '' ? null : Number(v)) })}
                   >
+                    <MenuItem value="">Select a Podman host</MenuItem>
                     {podmanHosts.map((host) => (
                       <MenuItem key={host.id} value={host.id}>
                         {host.name} ({host.hostname})
@@ -498,7 +501,7 @@ const RestoreWizard: React.FC = () => {
             {activeStep === steps.length - 1 ? (
               <Button
                 variant="contained"
-                onClick={handleSubmit}
+                onClick={handleSubmit(onSubmit)}
                 disabled={isSubmitting}
                 startIcon={isSubmitting ? <CircularProgress size={20} /> : <RestoreIcon />}
               >
