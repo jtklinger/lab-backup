@@ -19,6 +19,7 @@ import Storage from './pages/Storage';
 import Schedules from './pages/Schedules';
 import BackupWizard from './pages/BackupWizard';
 import RestoreWizard from './pages/RestoreWizard';
+import Admin from './pages/Admin';
 
 // Protected Route wrapper
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -74,7 +75,7 @@ const AppContent: React.FC = () => {
             <Route path="containers" element={<Containers />} />
             <Route path="storage" element={<Storage />} />
             <Route path="schedules" element={<Schedules />} />
-            <Route path="admin" element={<div>Admin Page (Coming Soon)</div>} />
+            <Route path="admin" element={<Admin />} />
           </Route>
         </Routes>
       </Router>
