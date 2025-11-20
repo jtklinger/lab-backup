@@ -163,23 +163,34 @@ export interface Backup {
 }
 
 // Schedules
+export const SourceType = {
+  VM: 'vm',
+  CONTAINER: 'container',
+} as const;
+
+export type SourceType = typeof SourceType[keyof typeof SourceType];
+
+export const ScheduleType = {
+  FULL: 'full',
+  INCREMENTAL: 'incremental',
+} as const;
+
+export type ScheduleType = typeof ScheduleType[keyof typeof ScheduleType];
+
 export interface Schedule {
   id: number;
   name: string;
+  source_type: SourceType;
+  source_id: number;
+  schedule_type: ScheduleType;
   cron_expression: string;
-  vm_id?: number;
-  vm_name?: string;
-  container_id?: number;
-  container_name?: string;
+  retention_config: Record<string, any>;
   storage_backend_id: number;
-  storage_backend_name?: string;
-  retention_count?: number;
-  compression_algorithm: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
+  enabled: boolean;
   last_run?: string;
   next_run?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // Jobs
