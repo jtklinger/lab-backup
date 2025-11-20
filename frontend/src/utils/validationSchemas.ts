@@ -109,7 +109,7 @@ export const createUserSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/, 'Username can only contain letters, numbers, hyphens, and underscores'),
   email: email,
   password: password,
-  role: z.enum(['ADMIN', 'OPERATOR', 'VIEWER']),
+  role: z.enum(['admin', 'operator', 'viewer']),
   is_active: z.boolean(),
 });
 
@@ -121,7 +121,7 @@ export const updateUserSchema = z.object({
     .regex(/^[a-zA-Z0-9_-]+$/, 'Username can only contain letters, numbers, hyphens, and underscores'),
   email: email,
   password: z.string().min(8, 'Password must be at least 8 characters').optional().or(z.literal('')),
-  role: z.enum(['ADMIN', 'OPERATOR', 'VIEWER']),
+  role: z.enum(['admin', 'operator', 'viewer']),
   is_active: z.boolean(),
 });
 

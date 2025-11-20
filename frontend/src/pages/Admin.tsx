@@ -146,7 +146,7 @@ const UsersTab: React.FC = () => {
       username: '',
       email: '',
       password: '',
-      role: 'VIEWER' as const,
+      role: 'viewer' as const,
       is_active: true,
     },
   });
@@ -173,7 +173,7 @@ const UsersTab: React.FC = () => {
       username: '',
       email: '',
       password: '',
-      role: 'VIEWER' as const,
+      role: 'viewer' as const,
       is_active: true,
     });
     setDialogOpen(true);
@@ -407,14 +407,14 @@ const UsersTab: React.FC = () => {
                   select
                   label="Role"
                   required
-                  defaultValue="VIEWER"
+                  defaultValue="viewer"
                   error={!!errors.role}
                   helperText={errors.role?.message}
                   {...register('role')}
                 >
-                  <MenuItem value="ADMIN">Admin</MenuItem>
-                  <MenuItem value="OPERATOR">Operator</MenuItem>
-                  <MenuItem value="VIEWER">Viewer</MenuItem>
+                  <MenuItem value="admin">Admin</MenuItem>
+                  <MenuItem value="operator">Operator</MenuItem>
+                  <MenuItem value="viewer">Viewer</MenuItem>
                 </TextField>
               </Grid>
               <Grid size={{ xs: 12 }}>
