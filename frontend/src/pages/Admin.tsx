@@ -50,7 +50,7 @@ import { useSnackbar } from 'notistack';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import api, { handleApiError } from '../services/api';
-import type { User, KVMHost, PodmanHost, AuditLog, PaginatedResponse } from '../types';
+import type { User, KVMHost, PodmanHost, AuditLog } from '../types';
 import { UserRole, AuditSeverity } from '../types';
 import {
   createUserSchema,
@@ -1274,8 +1274,8 @@ const AuditLogsTab: React.FC = () => {
       if (filters.resource_type) params.resource_type = filters.resource_type;
       if (filters.severity) params.severity = filters.severity;
 
-      const response = await api.get<PaginatedResponse<AuditLog>>('/audit-logs', { params });
-      setLogs(response.data.items);
+      const response = await api.get<any>('/audit', { params });
+      setLogs(response.data.logs || []);
       setTotal(response.data.total);
     } catch (err) {
       setError(handleApiError(err));
