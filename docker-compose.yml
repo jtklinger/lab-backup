@@ -64,9 +64,10 @@ services:
       - backup_data:/backups
       - ssl_certs:/app/certs
       - log_files:/var/log/lab-backup
-      - ~/.ssh:/root/.ssh
-      - /var/run/libvirt:/var/run/libvirt
-      - /var/run/podman:/var/run/podman
+      # Windows: SSH and socket mounts disabled for Docker Desktop compatibility
+      # - ~/.ssh:/root/.ssh
+      # - /var/run/libvirt:/var/run/libvirt
+      # - /var/run/podman:/var/run/podman
     ports:
       - "8000:8000"
       - "8443:8443"
@@ -86,7 +87,7 @@ services:
       dockerfile: Dockerfile
     container_name: lab-backup-frontend
     environment:
-      - VITE_API_URL=https://api:8443
+      - VITE_API_URL=https://localhost:8443
     ports:
       - "3000:80"
     depends_on:
@@ -112,9 +113,10 @@ services:
       - ./backend:/app/backend
       - ./database:/app/database
       - backup_data:/backups
-      - ~/.ssh:/root/.ssh
-      - /var/run/libvirt:/var/run/libvirt
-      - /var/run/podman:/var/run/podman
+      # Windows: SSH and socket mounts disabled for Docker Desktop compatibility
+      # - ~/.ssh:/root/.ssh
+      # - /var/run/libvirt:/var/run/libvirt
+      # - /var/run/podman:/var/run/podman
     depends_on:
       postgres:
         condition: service_healthy
