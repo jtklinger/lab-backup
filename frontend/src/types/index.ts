@@ -141,7 +141,7 @@ export interface Backup {
   storage_backend_id: number;
   storage_backend_name?: string;
   storage_path: string;
-  size_bytes: number;
+  size: number;  // Changed from size_bytes to match backend
   status: BackupStatus;
   compression_algorithm?: string;
   encryption_key_id?: number;

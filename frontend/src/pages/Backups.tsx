@@ -238,7 +238,7 @@ const Backups: React.FC = () => {
                     </Typography>
                   </TableCell>
                   <TableCell>{backup.storage_backend_name}</TableCell>
-                  <TableCell>{formatBytes(backup.size_bytes)}</TableCell>
+                  <TableCell>{formatBytes(backup.size || 0)}</TableCell>
                   <TableCell>
                     <Chip
                       label={backup.status}
