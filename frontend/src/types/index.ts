@@ -20,7 +20,6 @@ export interface User {
   role: UserRole;
   is_active: boolean;
   created_at: string;
-  updated_at: string;
 }
 
 export interface LoginRequest {
