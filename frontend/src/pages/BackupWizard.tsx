@@ -90,11 +90,11 @@ const BackupWizard: React.FC = () => {
       const [vmsResp, containersResp, storageResp] = await Promise.all([
         api.get<VM[]>('/kvm/vms'),
         api.get<Container[]>('/podman/containers'),
-        api.get<StorageBackend[]>('/storage-backends'),
+        api.get<StorageBackend[]>('/storage'),
       ]);
       setVMs(vmsResp.data);
       setContainers(containersResp.data);
-      setStorageBackends(storageResp.data.filter(b => b.is_active));
+      setStorageBackends(storageResp.data.filter(b => b.enabled));
     } catch (err) {
       setError(handleApiError(err));
     } finally {

@@ -58,18 +58,18 @@ const Storage: React.FC = () => {
     name: string;
     type: typeof StorageType[keyof typeof StorageType];
     config: Record<string, any>;
-    is_active: boolean;
+    threshold?: number;
   }>({
     name: '',
     type: StorageType.LOCAL,
     config: {},
-    is_active: true,
+    threshold: 80,
   });
 
   const fetchBackends = async () => {
     try {
       setIsLoading(true);
-      const response = await api.get<StorageBackend[]>('/storage-backends');
+      const response = await api.get<StorageBackend[]>('/storage');
       setBackends(response.data);
     } catch (err) {
       setError(handleApiError(err));
@@ -88,7 +88,7 @@ const Storage: React.FC = () => {
       name: '',
       type: StorageType.LOCAL,
       config: {},
-      is_active: true,
+      threshold: 80,
     });
     setDialogOpen(true);
   };
@@ -99,7 +99,7 @@ const Storage: React.FC = () => {
       name: backend.name,
       type: backend.type,
       config: backend.config,
-      is_active: backend.is_active,
+      threshold: backend.threshold,
     });
     setDialogOpen(true);
   };
@@ -107,9 +107,9 @@ const Storage: React.FC = () => {
   const handleSubmit = async () => {
     try {
       if (editingBackend) {
-        await api.put(`/storage-backends/${editingBackend.id}`, formData);
+        await api.put(`/storage/${editingBackend.id}`, formData);
       } else {
-        await api.post('/storage-backends', formData);
+        await api.post('/storage', formData);
       }
       setDialogOpen(false);
       await fetchBackends();
@@ -127,7 +127,7 @@ const Storage: React.FC = () => {
     if (!backendToDelete) return;
 
     try {
-      await api.delete(`/storage-backends/${backendToDelete.id}`);
+      await api.delete(`/storage/${backendToDelete.id}`);
       enqueueSnackbar('Storage backend deleted successfully', { variant: 'success' });
       setDeleteDialogOpen(false);
       setBackendToDelete(null);
@@ -141,7 +141,7 @@ const Storage: React.FC = () => {
   const handleTest = async (id: number) => {
     try {
       setTestingBackend(id);
-      await api.post(`/storage-backends/${id}/test`);
+      await api.post(`/storage/${id}/test`);
       enqueueSnackbar('Connection test successful!', { variant: 'success' });
     } catch (err) {
       setError(handleApiError(err));
@@ -247,8 +247,8 @@ const Storage: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     <Chip
-                      label={backend.is_active ? 'Active' : 'Inactive'}
-                      color={backend.is_active ? 'success' : 'default'}
+                      label={backend.enabled ? 'Active' : 'Inactive'}
+                      color={backend.enabled ? 'success' : 'default'}
                       size="small"
                     />
                   </TableCell>

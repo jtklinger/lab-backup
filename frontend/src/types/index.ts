@@ -95,9 +95,10 @@ export interface Container {
 
 // Storage Backends
 export const StorageType = {
-  LOCAL: 'LOCAL',
-  S3: 'S3',
-  SMB: 'SMB',
+  LOCAL: 'local',
+  S3: 's3',
+  SMB: 'smb',
+  NFS: 'nfs',
 } as const;
 
 export type StorageType = typeof StorageType[keyof typeof StorageType];
@@ -107,7 +108,10 @@ export interface StorageBackend {
   name: string;
   type: StorageType;
   config: Record<string, any>;
-  is_active: boolean;
+  enabled: boolean;
+  capacity?: number;
+  used?: number;
+  threshold: number;
   created_at: string;
   updated_at: string;
 }
