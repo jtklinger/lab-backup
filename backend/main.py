@@ -11,7 +11,7 @@ import asyncio
 
 from backend.core.config import settings
 from backend.core.logging_handler import setup_logging, setup_database_logging, setup_file_logging
-from backend.api.v1 import auth, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api, compliance, audit, dashboard
+from backend.api.v1 import auth, users, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api, compliance, audit, dashboard
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
@@ -94,6 +94,7 @@ if static_dir.exists():
 # Include routers
 app.include_router(settings_api.router, prefix=f"{settings.API_V1_PREFIX}/settings", tags=["Settings"])
 app.include_router(auth.router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["Authentication"])
+app.include_router(users.router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])
 app.include_router(dashboard.router, prefix=f"{settings.API_V1_PREFIX}/dashboard", tags=["Dashboard"])
 app.include_router(kvm.router, prefix=f"{settings.API_V1_PREFIX}/kvm", tags=["KVM"])
 app.include_router(podman.router, prefix=f"{settings.API_V1_PREFIX}/podman", tags=["Podman"])
