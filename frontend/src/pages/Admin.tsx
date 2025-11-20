@@ -499,7 +499,7 @@ const KVMHostsTab: React.FC = () => {
   const fetchHosts = async () => {
     try {
       setIsLoading(true);
-      const response = await api.get<KVMHost[]>('/kvm-hosts');
+      const response = await api.get<KVMHost[]>('/kvm/hosts');
       setHosts(response.data);
     } catch (err) {
       setError(handleApiError(err));
@@ -548,7 +548,7 @@ const KVMHostsTab: React.FC = () => {
         await api.put(`/kvm-hosts/${editingHost.id}`, data);
         enqueueSnackbar('KVM host updated successfully', { variant: 'success' });
       } else {
-        await api.post('/kvm-hosts', data);
+        await api.post('/kvm/hosts', data);
         enqueueSnackbar('KVM host created successfully', { variant: 'success' });
       }
       setDialogOpen(false);
@@ -895,7 +895,7 @@ const PodmanHostsTab: React.FC = () => {
   const fetchHosts = async () => {
     try {
       setIsLoading(true);
-      const response = await api.get<PodmanHost[]>('/podman-hosts');
+      const response = await api.get<PodmanHost[]>('/podman/hosts');
       setHosts(response.data);
     } catch (err) {
       setError(handleApiError(err));
@@ -940,7 +940,7 @@ const PodmanHostsTab: React.FC = () => {
         await api.put(`/podman-hosts/${editingHost.id}`, data);
         enqueueSnackbar('Podman host updated successfully', { variant: 'success' });
       } else {
-        await api.post('/podman-hosts', data);
+        await api.post('/podman/hosts', data);
         enqueueSnackbar('Podman host created successfully', { variant: 'success' });
       }
       setDialogOpen(false);

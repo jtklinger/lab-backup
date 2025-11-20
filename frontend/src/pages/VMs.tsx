@@ -60,7 +60,7 @@ const VMs: React.FC = () => {
         offset: page * rowsPerPage,
       };
 
-      const response = await api.get<PaginatedResponse<VM>>('/vms', { params });
+      const response = await api.get<PaginatedResponse<VM>>('/kvm/vms', { params });
       setVMs(response.data.items);
       setTotal(response.data.total);
     } catch (err) {
@@ -72,7 +72,7 @@ const VMs: React.FC = () => {
 
   const fetchHosts = async () => {
     try {
-      const response = await api.get<KVMHost[]>('/kvm-hosts');
+      const response = await api.get<KVMHost[]>('/kvm/hosts');
       setHosts(response.data);
     } catch (err) {
       console.error('Failed to fetch KVM hosts:', err);

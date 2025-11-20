@@ -106,8 +106,8 @@ const Schedules: React.FC = () => {
   const fetchResources = async () => {
     try {
       const [vmsResp, containersResp, storageResp] = await Promise.all([
-        api.get<VM[]>('/vms'),
-        api.get<Container[]>('/containers'),
+        api.get<VM[]>('/kvm/vms'),
+        api.get<Container[]>('/podman/containers'),
         api.get<StorageBackend[]>('/storage-backends'),
       ]);
       setVMs(vmsResp.data);

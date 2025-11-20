@@ -60,7 +60,7 @@ const Containers: React.FC = () => {
         offset: page * rowsPerPage,
       };
 
-      const response = await api.get<PaginatedResponse<Container>>('/containers', { params });
+      const response = await api.get<PaginatedResponse<Container>>('/podman/containers', { params });
       setContainers(response.data.items);
       setTotal(response.data.total);
     } catch (err) {
@@ -72,7 +72,7 @@ const Containers: React.FC = () => {
 
   const fetchHosts = async () => {
     try {
-      const response = await api.get<PodmanHost[]>('/podman-hosts');
+      const response = await api.get<PodmanHost[]>('/podman/hosts');
       setHosts(response.data);
     } catch (err) {
       console.error('Failed to fetch Podman hosts:', err);

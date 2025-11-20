@@ -84,8 +84,8 @@ const RestoreWizard: React.FC = () => {
       setIsLoading(true);
       const [backupResp, kvmResp, podmanResp] = await Promise.all([
         api.get<Backup>(`/backups/${backupId}`),
-        api.get<KVMHost[]>('/kvm-hosts'),
-        api.get<PodmanHost[]>('/podman-hosts'),
+        api.get<KVMHost[]>('/kvm/hosts'),
+        api.get<PodmanHost[]>('/podman/hosts'),
       ]);
 
       setBackup(backupResp.data);
