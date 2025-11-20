@@ -114,10 +114,10 @@ export interface StorageBackend {
 
 // Backups
 export const BackupStatus = {
-  PENDING: 'PENDING',
-  RUNNING: 'RUNNING',
-  COMPLETED: 'COMPLETED',
-  FAILED: 'FAILED',
+  PENDING: 'pending',
+  RUNNING: 'running',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
 } as const;
 
 export type BackupStatus = typeof BackupStatus[keyof typeof BackupStatus];

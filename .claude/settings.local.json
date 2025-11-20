@@ -30,7 +30,8 @@
       "Bash(docker-compose run:*)",
       "Bash(find:*)",
       "Bash(curl:*)",
-      "Bash(timeout 60 docker-compose ps:*)"
+      "Bash(timeout 60 docker-compose ps:*)",
+      "Bash(docker exec:*)"
     ],
     "deny": [],
     "ask": []
