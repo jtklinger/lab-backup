@@ -3,10 +3,10 @@ Backup API endpoints.
 """
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Generic, TypeVar
 
 from backend.models.base import get_db
 from backend.models.user import User, UserRole
@@ -16,6 +16,16 @@ from backend.models.settings import SystemSetting
 from backend.core.security import get_current_user, require_role
 
 router = APIRouter()
+
+# Generic paginated response
+T = TypeVar('T')
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Paginated response model."""
+    items: List[T]
+    total: int
+    limit: int
+    offset: int
 
 
 class BackupResponse(BaseModel):
@@ -192,7 +202,7 @@ async def trigger_backup(
     return backup
 
 
-@router.get("", response_model=List[BackupResponse])
+@router.get("", response_model=PaginatedResponse[BackupResponse])
 async def list_backups(
     status: Optional[BackupStatus] = None,
     limit: int = 100,
@@ -201,15 +211,22 @@ async def list_backups(
     current_user: User = Depends(get_current_user)
 ):
     """List backups with optional filtering."""
+    # Build base query
     stmt = select(Backup)
-
     if status:
         stmt = stmt.where(Backup.status == status)
 
-    stmt = stmt.order_by(Backup.created_at.desc()).limit(limit).offset(offset)
+    # Get total count
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar_one()
 
+    # Get paginated items
+    stmt = stmt.order_by(Backup.created_at.desc()).limit(limit).offset(offset)
     result = await db.execute(stmt)
-    return result.scalars().all()
+    items = result.scalars().all()
+
+    return PaginatedResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/{backup_id}", response_model=BackupResponse)

@@ -6,10 +6,10 @@ import subprocess
 import tempfile
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Generic, TypeVar
 
 from backend.models.base import get_db
 from backend.models.user import User, UserRole
@@ -27,6 +27,16 @@ from backend.services.kvm.backup import KVMBackupService
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Generic paginated response
+T = TypeVar('T')
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Paginated response model."""
+    items: List[T]
+    total: int
+    limit: int
+    offset: int
 
 
 class StorageCapabilities(BaseModel):
@@ -330,21 +340,31 @@ async def delete_host(
     return None
 
 
-@router.get("/vms", response_model=List[VMResponse])
+@router.get("/vms", response_model=PaginatedResponse[VMResponse])
 async def list_all_vms(
     host_id: Optional[int] = None,
+    limit: int = 100,
+    offset: int = 0,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """List all VMs across all KVM hosts, optionally filtered by host_id."""
+    # Build base query
+    stmt = select(VM)
     if host_id:
-        stmt = select(VM).where(VM.kvm_host_id == host_id)
-    else:
-        stmt = select(VM)
+        stmt = stmt.where(VM.kvm_host_id == host_id)
 
+    # Get total count
+    count_stmt = select(func.count()).select_from(stmt.subquery())
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar_one()
+
+    # Get paginated items
+    stmt = stmt.limit(limit).offset(offset)
     result = await db.execute(stmt)
-    vms = result.scalars().all()
-    return vms
+    items = result.scalars().all()
+
+    return PaginatedResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/hosts/{host_id}/vms", response_model=List[VMResponse])
