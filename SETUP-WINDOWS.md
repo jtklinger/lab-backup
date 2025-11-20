@@ -1,8 +1,8 @@
 # Lab Backup System - Windows 11 Quick Start Guide
 
-## 🎉 Zero Configuration Setup!
+## 🎉 Modern Web Interface!
 
-No need to edit environment files manually - everything is configured through a friendly web interface!
+No command-line required - everything is managed through a beautiful React-based web interface!
 
 ## Prerequisites
 
@@ -10,14 +10,15 @@ No need to edit environment files manually - everything is configured through a 
    - Download from: https://www.docker.com/products/docker-desktop/
    - Run installer and restart your computer
    - Ensure WSL 2 is enabled
+   - Allocate at least 4GB RAM to Docker (Settings → Resources)
 
 2. **Clone the Repository**
    ```powershell
-   git clone <repository-url>
+   git clone https://github.com/jtklinger/lab-backup.git
    cd lab-backup
    ```
 
-## Installation (3 Simple Steps!)
+## Installation (4 Simple Steps!)
 
 ### Step 1: Start the System
 
@@ -25,57 +26,54 @@ No need to edit environment files manually - everything is configured through a 
 docker-compose up -d
 ```
 
-That's it! No environment file editing required. The system will:
+Wait about 30 seconds for all services to start. The system will:
 - ✅ Auto-generate secure configuration
 - ✅ Create the database
 - ✅ Run migrations automatically
-- ✅ Start all services
+- ✅ Start all services (API, Frontend, Workers)
 
-### Step 2: Login with Default Credentials
-
-**Default Admin Account (Auto-Created):**
-- **Username:** `admin`
-- **Password:** `admin`
-- **⚠️ IMPORTANT:** Change this password immediately after first login!
-
-Visit: **http://localhost:8000**
-
-You'll see the API documentation. Login via:
+**Verify services are running:**
 ```powershell
-$response = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/auth/login" `
-  -Method Post -ContentType "application/x-www-form-urlencoded" `
-  -Body "username=admin&password=admin"
-
-$token = $response.access_token
+docker-compose ps
 ```
 
-### Step 3: (Optional) Complete the Setup Wizard
+All services should show "Up" and "healthy" status.
 
-If you want to configure email and retention via UI, visit: **http://localhost:8000/setup**
+### Step 2: Open the Web Interface
 
-The setup wizard has 3 tabs:
+**Open your browser and visit:**
+```
+http://localhost:3000
+```
 
-#### **Tab 1: Admin Account** (Optional - Default already created)
-- If you prefer, create a custom admin account
-- The default admin/admin account works fine for testing
+You should see the Lab Backup System login page.
 
-#### **Tab 2: Email Notifications** (Optional)
-- Enable/disable email notifications
-- Configure SMTP settings if you want email alerts
-- Common providers (Gmail, Outlook, SendGrid) supported
-- **Can configure later via API!**
+### Step 3: Accept SSL Certificate (First Time Only)
 
-#### **Tab 3: Retention Policy** (Optional - Has defaults)
-- Set how long to keep backups
-- Daily: 7 days (default)
-- Weekly: 4 weeks (default)
-- Monthly: 12 months (default)
-- Yearly: 5 years (default)
-- **Can configure later via API!**
+The API uses HTTPS with a self-signed certificate. Before logging in:
+
+1. Open a **new browser tab** and visit: `https://localhost:8443`
+2. Your browser will warn about the certificate being untrusted
+3. Click **"Advanced"** and **"Accept the Risk and Continue"** (wording varies by browser)
+4. You'll see a simple JSON response: `{"status":"healthy"}`
+5. **Close this tab** and return to http://localhost:3000
+
+### Step 4: Login to the Web Interface
+
+**Default Admin Credentials:**
+- **Username:** `admin`
+- **Password:** `admin`
+
+**⚠️ IMPORTANT:** Change this password immediately after first login!
+
+1. Enter the credentials and click "Login"
+2. Once logged in, click your profile icon (top right)
+3. Select "Change Password"
+4. Enter a strong password and save
 
 ### That's It! 🎉
 
-You can start using the system immediately with the default admin account.
+You're now ready to use the Lab Backup System through the modern web interface!
 
 ## What Happens Automatically
 
@@ -102,99 +100,87 @@ When you run `docker-compose up -d`:
    - Celery beat for scheduled tasks
    - Flower for monitoring (optional)
 
-## After Setup - Configure Via Web UI
+## After Setup - Using the Web Interface
 
-Once setup is complete, configure everything through the API/UI:
+Once logged in, you can configure everything through the web interface:
 
-### 1. Add KVM Host (Via API)
+### 1. Add a KVM Host (via Web UI)
 
-```powershell
-# Login to get token
-$response = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/auth/login" `
-  -Method Post `
-  -ContentType "application/x-www-form-urlencoded" `
-  -Body "username=admin&password=your-password"
+1. **Navigate to Infrastructure:**
+   - Click "Infrastructure" in the left sidebar
+   - Click the "KVM Hosts" tab
 
-$token = $response.access_token
-$headers = @{
-  "Authorization" = "Bearer $token"
-  "Content-Type" = "application/json"
-}
+2. **Add Host:**
+   - Click the "+ Add Host" button
+   - Fill in the form:
+     - **Name:** Give it a descriptive name (e.g., "Production KVM")
+     - **URI:** Connection string (e.g., `qemu+ssh://user@192.168.1.100/system`)
+     - **Authentication:** Choose SSH Key or Password
+   - Click "Test Connection" to verify
+   - Click "Save"
 
-# Add your KVM host
-$kvmHost = @{
-  name = "my-kvm-server"
-  uri = "qemu+ssh://user@192.168.1.100/system"
-  auth_type = "ssh"
-} | ConvertTo-Json
+3. **Your VMs will appear automatically!**
 
-Invoke-RestMethod -Uri "http://localhost:8000/api/v1/kvm/hosts" `
-  -Method Post -Headers $headers -Body $kvmHost
-```
+### 2. Add Storage Backend (via Web UI)
 
-### 2. Add Storage Backend
+1. **Navigate to Storage:**
+   - Click "Storage" in the left sidebar
 
-```powershell
-# Local storage
-$storage = @{
-  name = "local-backups"
-  type = "local"
-  config = @{
-    base_path = "/backups/local"
-  }
-  threshold = 80
-} | ConvertTo-Json
+2. **Add Storage:**
+   - Click "+ Add Storage" button
+   - Choose your storage type:
+     - **Local:** For testing or same-server storage
+     - **SMB/CIFS:** For Windows file shares or Samba
+     - **S3:** For object storage (AWS, MinIO, Backblaze B2)
 
-Invoke-RestMethod -Uri "http://localhost:8000/api/v1/storage" `
-  -Method Post -Headers $headers -Body $storage
+3. **Configure settings based on type:**
+   - Fill in the form with connection details
+   - Click "Test Connection" to verify
+   - Click "Save"
 
-# Or S3/Backblaze B2
-$s3storage = @{
-  name = "backblaze"
-  type = "s3"
-  config = @{
-    endpoint_url = "https://s3.us-west-002.backblazeb2.com"
-    aws_access_key_id = "your-key"
-    aws_secret_access_key = "your-secret"
-    bucket_name = "my-backups"
-    region = "us-west-002"
-  }
-  threshold = 80
-} | ConvertTo-Json
+### 3. Create a Backup Schedule (via Web UI)
 
-Invoke-RestMethod -Uri "http://localhost:8000/api/v1/storage" `
-  -Method Post -Headers $headers -Body $s3storage
-```
+1. **Navigate to Schedules:**
+   - Click "Schedules" in the left sidebar
 
-### 3. Create Backup Schedule
+2. **Create Schedule:**
+   - Click "+ Create Schedule" button
+   - Fill in the schedule form:
+     - **Name:** Descriptive name (e.g., "Daily Production Backup")
+     - **VM/Container:** Select from dropdown
+     - **Storage Backend:** Choose where to store backups
+     - **Schedule:** Use cron expression or helper:
+       - Daily at 2 AM: `0 2 * * *`
+       - Every 6 hours: `0 */6 * * *`
+     - **Retention Policy:**
+       - Daily: Keep last 7 days
+       - Weekly: Keep last 4 weeks
+       - Monthly: Keep last 12 months
+       - Yearly: Keep last 5 years
+   - Click "Create"
 
-```powershell
-$schedule = @{
-  name = "Daily VM Backup"
-  source_type = "vm"
-  source_id = 1
-  schedule_type = "daily"
-  cron_expression = "0 2 * * *"
-  retention_config = @{
-    daily = 7
-    weekly = 4
-    monthly = 12
-    yearly = 5
-  }
-  storage_backend_id = 1
-} | ConvertTo-Json
+### 4. Monitor Your Backups
 
-Invoke-RestMethod -Uri "http://localhost:8000/api/v1/schedules" `
-  -Method Post -Headers $headers -Body $schedule
-```
+1. **Dashboard:** Real-time overview of backups, storage, and system health
+2. **Backups Page:** View all completed backups, filter by VM, date, status
+3. **Jobs Page:** Track running and completed backup/restore operations
+4. **Settings:** Configure email notifications, retention policies, and system settings
 
 ## Access Points
 
-After setup:
+The system provides multiple interfaces:
 
-- **API Documentation**: http://localhost:8000/docs
-- **Celery Monitoring**: http://localhost:5555
-- **Health Check**: http://localhost:8000/health
+| Interface | URL | Purpose |
+|-----------|-----|---------|
+| **Web Interface** (Primary) | http://localhost:3000 | Daily operations, configuration, monitoring |
+| **API Documentation** | http://localhost:8000/docs | API reference for automation |
+| **Celery Flower** | http://localhost:5555 | Task queue monitoring |
+
+## Using the API (Optional - For Automation)
+
+If you prefer PowerShell automation, see the [README.md](README.md#using-the-api-for-automation) for API examples.
+
+The API is available at http://localhost:8000/docs with interactive documentation.
 
 ## Updating Settings Later
 

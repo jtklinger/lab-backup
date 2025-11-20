@@ -58,37 +58,56 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system architecture, compone
 
 ## Quick Start
 
+> **🚀 New Users:** See [GETTING-STARTED.md](GETTING-STARTED.md) for a comprehensive step-by-step guide with detailed explanations.
+
 ### Prerequisites
 
-- Docker or Podman with Docker Compose
-- Access to KVM/libvirt host (local or remote)
-- Access to Podman host (optional, if backing up containers)
-- PostgreSQL 15+ (included in docker-compose)
-- Redis 7+ (included in docker-compose)
+- Docker Desktop (Windows/Mac) or Docker (Linux)
+- Minimum 4GB RAM allocated to Docker
+- Modern web browser
+- Access to KVM/libvirt host (local or remote) or Podman host
 
-### Installation
+### Installation (2 Minutes)
 
-#### Option 1: Zero-Configuration Setup (Recommended)
-
-1. **Clone and start**
+1. **Clone and start:**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/jtklinger/lab-backup.git
    cd lab-backup
    docker-compose up -d
    ```
 
-2. **Open browser and complete setup wizard**
-   - Visit http://localhost:8000
-   - Follow the 3-step setup wizard
-   - Configure admin account, email (optional), and retention policies
-   - **Done!** Everything else is configured via web UI
+2. **Access the Web Interface:**
+   ```
+   Open your browser: http://localhost:3000
+   Login: admin / admin
+   ⚠️ CHANGE PASSWORD IMMEDIATELY!
+   ```
 
-3. **Access the application**
-   - API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
-   - Celery Flower: http://localhost:5555
+3. **Accept SSL Certificate (first time only):**
+   - Visit https://localhost:8443 in a new tab
+   - Accept the security warning for the self-signed certificate
+   - Return to the web interface
 
-See [SETUP-WINDOWS.md](SETUP-WINDOWS.md) for detailed Windows 11 guide.
+### Quick Configuration via Web Interface
+
+1. **Add KVM Host:** Infrastructure → KVM Hosts → Add Host
+2. **Add Storage:** Storage → Add Storage → Configure your backend
+3. **Create Schedule:** Schedules → Create Schedule → Set up automated backups
+4. **Monitor:** Dashboard shows system status and recent activity
+
+### Accessing the System
+
+The Lab Backup System provides three interfaces:
+
+| Interface | URL | Purpose |
+|-----------|-----|---------|
+| **Web Interface** (Primary) | http://localhost:3000 | Daily operations, monitoring, configuration |
+| **API Documentation** | http://localhost:8000/docs | Automation, scripting, API reference |
+| **Celery Flower** | http://localhost:5555 | Task monitoring, worker health |
+
+**For detailed setup instructions, see:**
+- [GETTING-STARTED.md](GETTING-STARTED.md) - Comprehensive guide with detailed walkthroughs
+- [SETUP-WINDOWS.md](SETUP-WINDOWS.md) - Windows-specific instructions
 
 #### Option 2: Manual Configuration (Advanced)
 
@@ -183,7 +202,32 @@ RETENTION_YEARLY=1825
 
 ## Usage
 
-### API Authentication
+### Using the Web Interface (Recommended)
+
+The Lab Backup System features a modern React-based web interface for all operations:
+
+**Access:** http://localhost:3000
+
+**Key Features:**
+- **Dashboard:** Real-time overview of backups, storage, and system health
+- **Infrastructure Management:** Add and manage KVM hosts and Podman containers
+- **Storage Configuration:** Configure local, SMB, and S3 storage backends
+- **Backup Schedules:** Create and manage automated backup schedules with cron expressions
+- **Backup Operations:** Run on-demand backups and view backup history
+- **Restore Operations:** Restore VMs/containers to original or different hosts
+- **Job Monitoring:** Track running and completed backup/restore jobs
+- **User Management:** Manage users and role-based permissions
+- **Settings:** Configure email notifications, retention policies, and system settings
+
+For detailed instructions on using the web interface, see [GETTING-STARTED.md](GETTING-STARTED.md).
+
+### Using the API (For Automation)
+
+The REST API is available for automation, scripting, and integration with other systems.
+
+**API Documentation:** http://localhost:8000/docs (Interactive Swagger UI)
+
+#### API Authentication
 
 1. **Login to get access token**
    ```bash
