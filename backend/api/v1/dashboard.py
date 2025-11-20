@@ -56,7 +56,7 @@ async def get_dashboard_stats(
     failed_backups = result.scalar_one() or 0
 
     # Sum total backup size
-    stmt = select(func.coalesce(func.sum(Backup.size_bytes), 0))
+    stmt = select(func.coalesce(func.sum(Backup.size), 0))
     result = await db.execute(stmt)
     total_size_bytes = result.scalar_one() or 0
 
@@ -78,7 +78,7 @@ async def get_dashboard_stats(
     total_containers = result.scalar_one() or 0
 
     # Count active schedules
-    stmt = select(func.count(BackupSchedule.id)).where(BackupSchedule.is_active == True)
+    stmt = select(func.count(BackupSchedule.id)).where(BackupSchedule.enabled == True)
     result = await db.execute(stmt)
     active_schedules = result.scalar_one() or 0
 
