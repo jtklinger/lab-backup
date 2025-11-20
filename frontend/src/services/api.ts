@@ -71,3 +71,67 @@ export const handleApiError = (error: unknown): string => {
   }
   return 'An unexpected error occurred';
 };
+
+/**
+ * Settings API
+ */
+export const settingsAPI = {
+  /**
+   * Get all setting categories
+   */
+  getCategories: () => api.get<string[]>('/settings/categories'),
+
+  /**
+   * Get settings by category
+   */
+  getByCategory: (category: string) => api.get(`/settings/category/${category}`),
+
+  /**
+   * Get specific setting
+   */
+  get: (key: string) => api.get(`/settings/${key}`),
+
+  /**
+   * Update setting
+   */
+  update: (key: string, value: string) => api.put(`/settings/${key}`, { value }),
+
+  /**
+   * Bulk update settings
+   */
+  bulkUpdate: (updates: Record<string, string>) => api.put('/settings/bulk', updates),
+};
+
+/**
+ * SSH Key API
+ */
+export const sshKeyAPI = {
+  /**
+   * List SSH keys for a host
+   */
+  list: (hostId: number) => api.get(`/kvm/hosts/${hostId}/ssh-keys`),
+
+  /**
+   * Upload SSH key
+   */
+  upload: (hostId: number, data: { name: string; private_key: string }) =>
+    api.post(`/kvm/hosts/${hostId}/ssh-keys`, data),
+
+  /**
+   * Generate new SSH key pair
+   */
+  generate: (hostId: number, data: { name: string; key_type?: string; key_size?: number }) =>
+    api.post(`/kvm/hosts/${hostId}/ssh-keys/generate`, data),
+
+  /**
+   * Get public key
+   */
+  getPublicKey: (hostId: number, keyId: number) =>
+    api.get(`/kvm/hosts/${hostId}/ssh-keys/${keyId}/public`),
+
+  /**
+   * Delete SSH key
+   */
+  delete: (hostId: number, keyId: number) =>
+    api.delete(`/kvm/hosts/${hostId}/ssh-keys/${keyId}`),
+};

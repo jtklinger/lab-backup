@@ -43,6 +43,7 @@ import {
   Computer as ComputerIcon,
   History as HistoryIcon,
   CheckCircle as TestIcon,
+  VpnKey as KeyIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import { useSnackbar } from 'notistack';
@@ -61,6 +62,7 @@ import {
   type KVMHostFormData,
   type PodmanHostFormData,
 } from '../utils/validationSchemas';
+import SSHKeyManagement from '../components/infrastructure/SSHKeyManagement';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -472,6 +474,8 @@ const KVMHostsTab: React.FC = () => {
   const [testingHost, setTestingHost] = useState<number | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [hostToDelete, setHostToDelete] = useState<KVMHost | null>(null);
+  const [sshKeyDialogOpen, setSSHKeyDialogOpen] = useState(false);
+  const [selectedHostForKeys, setSelectedHostForKeys] = useState<KVMHost | null>(null);
 
   const {
     register,
@@ -593,6 +597,11 @@ const KVMHostsTab: React.FC = () => {
     }
   };
 
+  const handleManageKeys = (host: KVMHost) => {
+    setSelectedHostForKeys(host);
+    setSSHKeyDialogOpen(true);
+  };
+
   const formatDate = (date: string): string => {
     return format(new Date(date), 'MMM dd, yyyy HH:mm');
   };
@@ -701,6 +710,14 @@ const KVMHostsTab: React.FC = () => {
                         ) : (
                           <TestIcon />
                         )}
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Manage SSH Keys">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleManageKeys(host)}
+                      >
+                        <KeyIcon />
                       </IconButton>
                     </Tooltip>
                     <Tooltip title="Edit">
@@ -856,6 +873,19 @@ const KVMHostsTab: React.FC = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* SSH Key Management Dialog */}
+      {selectedHostForKeys && (
+        <SSHKeyManagement
+          hostId={selectedHostForKeys.id}
+          hostName={selectedHostForKeys.name}
+          open={sshKeyDialogOpen}
+          onClose={() => {
+            setSSHKeyDialogOpen(false);
+            setSelectedHostForKeys(null);
+          }}
+        />
+      )}
     </Box>
   );
 };

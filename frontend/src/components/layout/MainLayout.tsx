@@ -33,6 +33,7 @@ import {
   Computer as ComputerIcon,
   ViewInAr as ContainerIcon,
   AdminPanelSettings as AdminIcon,
+  Settings as SettingsIcon,
   Brightness4 as DarkModeIcon,
   Brightness7 as LightModeIcon,
   AccountCircle,
@@ -61,6 +62,7 @@ const navItems: NavItem[] = [
   { text: 'Containers', icon: <ContainerIcon />, path: '/containers' },
   { text: 'Storage', icon: <StorageIcon />, path: '/storage', roles: [UserRole.ADMIN, UserRole.OPERATOR] },
   { text: 'Schedules', icon: <ScheduleIcon />, path: '/schedules', roles: [UserRole.ADMIN, UserRole.OPERATOR] },
+  { text: 'Settings', icon: <SettingsIcon />, path: '/settings', roles: [UserRole.ADMIN] },
   { text: 'Admin', icon: <AdminIcon />, path: '/admin', roles: [UserRole.ADMIN] },
 ];
 

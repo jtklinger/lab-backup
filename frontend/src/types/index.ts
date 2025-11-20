@@ -253,3 +253,47 @@ export interface PaginatedResponse<T> {
   limit: number;
   offset: number;
 }
+
+// Settings
+export interface Setting {
+  id: number;
+  key: string;
+  value: string;
+  category: string;
+  description: string;
+  data_type: string;
+  is_secret: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SettingUpdate {
+  key: string;
+  value: string;
+}
+
+export interface SettingsCategory {
+  category: string;
+  settings: Setting[];
+}
+
+// SSH Keys
+export interface SSHKey {
+  id: number;
+  name: string;
+  fingerprint: string;
+  key_type: string;
+  public_key?: string;
+  created_at: string;
+}
+
+export interface SSHKeyCreate {
+  name: string;
+  private_key: string;
+}
+
+export interface SSHKeyGenerate {
+  name: string;
+  key_type?: string;
+  key_size?: number;
+}
