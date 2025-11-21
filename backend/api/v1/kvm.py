@@ -387,22 +387,32 @@ async def test_host_connection(
     try:
         # Setup authentication based on auth type
         if host.auth_type == "password":
-            # For password auth, decrypt password and pass it
+            # Note: libvirt qemu+ssh:// connections do not support password authentication
+            # Password auth requires qemu+tcp:// with SASL, or using sshpass/expect
+            # For now, we'll attempt the connection but it will likely fail
+            # Recommendation: Use SSH key authentication for KVM hosts
             from backend.core.encryption import decrypt_password
             if host.password_encrypted:
                 try:
                     password = decrypt_password(host.password_encrypted, settings.SECRET_KEY)
-                    # Test connection with password
+                    # Attempt connection (will likely fail with qemu+ssh://)
                     success = await kvm_service.test_connection(
                         host.uri,
                         password=password,
                         username=host.username
                     )
+                    if not success:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Password authentication failed. libvirt qemu+ssh:// connections require SSH key authentication. Please use SSH keys or configure qemu+tcp:// with SASL authentication."
+                        )
+                except HTTPException:
+                    raise
                 except Exception as e:
-                    logger.error(f"Failed to decrypt password for host {host.name}: {e}")
+                    logger.error(f"Failed to test connection for host {host.name}: {e}")
                     raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Failed to decrypt stored password"
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Password authentication is not supported for SSH-based libvirt connections. Please use SSH key authentication instead."
                     )
             else:
                 raise HTTPException(
