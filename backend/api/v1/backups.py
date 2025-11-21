@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field
 from typing import List, Optional, Generic, TypeVar
 
 from backend.models.base import get_db
@@ -53,7 +53,7 @@ class BackupResponse(BaseModel):
     verified_size_bytes: Optional[int] = None
     verification_duration_seconds: Optional[int] = None
     # Chain tracking fields (Issue #10)
-    chain_id: Optional[str] = None
+    chain_id: Optional[UUID] = None
     sequence_number: Optional[int] = None
     original_size: Optional[int] = None
     dedupe_ratio: Optional[float] = None
@@ -68,13 +68,9 @@ class BackupResponse(BaseModel):
     storage_encryption_type: Optional[str] = "NONE"
     storage_encryption_key_id: Optional[str] = None
 
-    @field_serializer('chain_id')
-    def serialize_chain_id(self, chain_id: Optional[UUID], _info) -> Optional[str]:
-        """Convert UUID to string for JSON serialization."""
-        return str(chain_id) if chain_id else None
-
     class Config:
         from_attributes = True
+        json_schema_mode_override = "serialization"
 
 
 class TriggerBackupRequest(BaseModel):
