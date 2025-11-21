@@ -96,7 +96,7 @@ const VMs: React.FC = () => {
   const handleSyncHost = async (hostId: number) => {
     try {
       setSyncingHost(hostId);
-      await api.post(`/kvm-hosts/${hostId}/sync`);
+      await api.post(`/kvm/hosts/${hostId}/refresh`);
       await fetchVMs();
     } catch (err) {
       setError(handleApiError(err));

@@ -549,7 +549,7 @@ const KVMHostsTab: React.FC = () => {
   const onSubmit = async (data: KVMHostFormData) => {
     try {
       if (editingHost) {
-        await api.put(`/kvm-hosts/${editingHost.id}`, data);
+        await api.put(`/kvm/hosts/${editingHost.id}`, data);
         enqueueSnackbar('KVM host updated successfully', { variant: 'success' });
       } else {
         await api.post('/kvm/hosts', data);
@@ -572,7 +572,7 @@ const KVMHostsTab: React.FC = () => {
     if (!hostToDelete) return;
 
     try {
-      await api.delete(`/kvm-hosts/${hostToDelete.id}`);
+      await api.delete(`/kvm/hosts/${hostToDelete.id}`);
       enqueueSnackbar('KVM host deleted successfully', { variant: 'success' });
       setDeleteDialogOpen(false);
       setHostToDelete(null);
