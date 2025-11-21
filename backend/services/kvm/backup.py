@@ -291,7 +291,6 @@ Host {hostname}
                 if password:
                     # Use openAuth for password-based authentication
                     logger.info(f"Connecting to libvirt host with password authentication: {uri}")
-                    logger.debug(f"Username: {username}, Password provided: {bool(password)}")
 
                     # Extract username from URI if not provided
                     if not username:

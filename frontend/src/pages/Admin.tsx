@@ -790,7 +790,6 @@ const KVMHostsTab: React.FC = () => {
                   select
                   label="Authentication Type"
                   required
-                  defaultValue="SSH_KEY"
                   error={!!errors.auth_type}
                   helperText={errors.auth_type?.message}
                   {...register('auth_type')}

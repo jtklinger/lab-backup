@@ -148,7 +148,7 @@ class KVMHostResponse(BaseModel):
             hostname=hostname,
             port=port,
             username=username,
-            auth_type=host.auth_type,
+            auth_type=host.auth_type.upper() if host.auth_type else "SSH_KEY",
             ssh_key_path=None,  # SSH keys are stored separately
             is_active=host.enabled,
             created_at=host.created_at,
@@ -308,12 +308,15 @@ async def update_host(
             detail="KVM host not found"
         )
 
+    # Normalize auth_type to lowercase
+    auth_type_normalized = host_data.auth_type.lower() if host_data.auth_type else "ssh_key"
+
     # Test connection if URI or auth changed
-    if host_data.uri != host.uri or host_data.auth_type != host.auth_type:
+    if host_data.uri != host.uri or auth_type_normalized != host.auth_type:
         kvm_service = KVMBackupService()
 
         # For password auth, test with the provided password
-        if host_data.auth_type == "password" and host_data.password:
+        if auth_type_normalized == "password" and host_data.password:
             if not await kvm_service.test_connection(
                 host_data.uri,
                 password=host_data.password,
@@ -331,7 +334,7 @@ async def update_host(
                 )
 
     # Update password if provided (or clear if switching away from password auth)
-    if host_data.auth_type == "password" and host_data.password:
+    if auth_type_normalized == "password" and host_data.password:
         try:
             host.password_encrypted = encrypt_password(
                 host_data.password,
@@ -343,7 +346,7 @@ async def update_host(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to encrypt password"
             )
-    elif host_data.auth_type != "password":
+    elif auth_type_normalized != "password":
         # Clear password if not using password auth
         host.password_encrypted = None
 
@@ -351,13 +354,13 @@ async def update_host(
     host.name = host_data.name
     host.uri = host_data.uri
     host.username = host_data.username
-    host.auth_type = host_data.auth_type
-    host.config = host_data.config or {}
+    host.auth_type = auth_type_normalized
+    host.enabled = host_data.is_active
 
     await db.commit()
     await db.refresh(host)
 
-    return host
+    return KVMHostResponse.from_db_model(host)
 
 
 @router.delete("/hosts/{host_id}", status_code=status.HTTP_204_NO_CONTENT)
