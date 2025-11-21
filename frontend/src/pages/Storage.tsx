@@ -322,12 +322,79 @@ const Storage: React.FC = () => {
                 <MenuItem value={StorageType.SMB}>SMB/CIFS</MenuItem>
               </TextField>
             </Grid>
-            <Grid size={{ xs: 12 }}>
-              <Alert severity="info">
-                Storage backend configuration is managed via environment variables or API.
-                See documentation for details.
-              </Alert>
-            </Grid>
+            {/* SMB Configuration Fields */}
+            {formData.type === StorageType.SMB && (
+              <>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    label="Server"
+                    value={formData.config.server || ''}
+                    onChange={(e) => setFormData({ ...formData, config: { ...formData.config, server: e.target.value } })}
+                    required
+                    helperText="SMB server hostname or IP address"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    label="Share Name"
+                    value={formData.config.share || ''}
+                    onChange={(e) => setFormData({ ...formData, config: { ...formData.config, share: e.target.value } })}
+                    required
+                    helperText="SMB share name (e.g., backups)"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    label="Username"
+                    value={formData.config.username || ''}
+                    onChange={(e) => setFormData({ ...formData, config: { ...formData.config, username: e.target.value } })}
+                    required
+                    helperText="SMB username for authentication"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    type="password"
+                    label="Password"
+                    value={formData.config.password || ''}
+                    onChange={(e) => setFormData({ ...formData, config: { ...formData.config, password: e.target.value } })}
+                    required
+                    helperText="SMB password for authentication"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    label="Domain (Optional)"
+                    value={formData.config.domain || ''}
+                    onChange={(e) => setFormData({ ...formData, config: { ...formData.config, domain: e.target.value } })}
+                    helperText="Windows domain (default: WORKGROUP)"
+                  />
+                </Grid>
+                <Grid size={{ xs: 12 }}>
+                  <TextField
+                    fullWidth
+                    label="Base Path (Optional)"
+                    value={formData.config.path || '/'}
+                    onChange={(e) => setFormData({ ...formData, config: { ...formData.config, path: e.target.value } })}
+                    helperText="Base path within the share (default: /)"
+                  />
+                </Grid>
+              </>
+            )}
+            {/* For other storage types show the placeholder */}
+            {formData.type !== StorageType.SMB && (
+              <Grid size={{ xs: 12 }}>
+                <Alert severity="info">
+                  {formData.type === StorageType.LOCAL && 'Local storage uses the default backup directory configured in settings.'}
+                  {formData.type === StorageType.S3 && 'S3 storage configuration will be available in a future update.'}
+                </Alert>
+              </Grid>
+            )}
           </Grid>
         </DialogContent>
         <DialogActions>

@@ -111,8 +111,12 @@ export interface StorageBackend {
   capacity?: number;
   used?: number;
   threshold: number;
+  last_check?: string;
+  encryption_strategy?: string;
+  encryption_key_id?: number;
+  encryption_config?: Record<string, any>;
   created_at: string;
-  updated_at: string;
+  updated_at?: string;
 }
 
 // Backups

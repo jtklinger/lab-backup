@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import List, Optional
+from datetime import datetime
 
 from backend.models.base import get_db
 from backend.models.user import User, UserRole
@@ -27,10 +28,16 @@ class StorageBackendResponse(BaseModel):
     id: int
     name: str
     type: StorageType
+    config: dict
     enabled: bool
     capacity: Optional[int]
     used: Optional[int]
     threshold: int
+    last_check: Optional[str]
+    encryption_strategy: Optional[str]
+    encryption_key_id: Optional[int]
+    encryption_config: Optional[dict]
+    created_at: datetime
 
     class Config:
         from_attributes = True
