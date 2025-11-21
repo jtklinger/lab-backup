@@ -161,12 +161,14 @@ class VMResponse(BaseModel):
     """VM response model."""
     id: int
     kvm_host_id: int
+    kvm_host_name: Optional[str] = None
     name: str
     uuid: str
     vcpus: Optional[int]
     memory: Optional[int]
     disk_size: Optional[int]
     state: str
+    updated_at: datetime
 
     class Config:
         from_attributes = True
@@ -465,20 +467,41 @@ async def list_all_vms(
     current_user: User = Depends(get_current_user)
 ):
     """List all VMs across all KVM hosts, optionally filtered by host_id."""
-    # Build base query
-    stmt = select(VM)
+    # Build base query with join to get host name
+    stmt = select(VM, KVMHost.name.label("kvm_host_name")).join(
+        KVMHost, VM.kvm_host_id == KVMHost.id
+    )
     if host_id:
         stmt = stmt.where(VM.kvm_host_id == host_id)
 
     # Get total count
-    count_stmt = select(func.count()).select_from(stmt.subquery())
+    count_stmt = select(func.count()).select_from(VM)
+    if host_id:
+        count_stmt = count_stmt.where(VM.kvm_host_id == host_id)
     total_result = await db.execute(count_stmt)
     total = total_result.scalar_one()
 
     # Get paginated items
     stmt = stmt.limit(limit).offset(offset)
     result = await db.execute(stmt)
-    items = result.scalars().all()
+    rows = result.all()
+
+    # Convert to VMResponse objects with kvm_host_name
+    items = []
+    for vm, kvm_host_name in rows:
+        vm_dict = {
+            "id": vm.id,
+            "kvm_host_id": vm.kvm_host_id,
+            "kvm_host_name": kvm_host_name,
+            "name": vm.name,
+            "uuid": vm.uuid,
+            "vcpus": vm.vcpus,
+            "memory": vm.memory,
+            "disk_size": vm.disk_size,
+            "state": vm.state,
+            "updated_at": vm.created_at  # VM model uses created_at, not updated_at
+        }
+        items.append(VMResponse(**vm_dict))
 
     return PaginatedResponse(items=items, total=total, limit=limit, offset=offset)
 
