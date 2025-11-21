@@ -79,24 +79,68 @@ def compute_storage_capabilities(config: Optional[dict]) -> Optional[StorageCapa
 class KVMHostCreate(BaseModel):
     """KVM host creation model."""
     name: str
-    uri: str
-    username: Optional[str] = None
-    auth_type: str = "ssh"
-    password: Optional[str] = None  # Plain text password for auth_type="password"
-    config: Optional[dict] = None
+    hostname: str  # Hostname or IP address
+    port: int = 22  # SSH port
+    username: str = "root"
+    auth_type: str = "SSH_KEY"  # SSH_KEY or PASSWORD
+    password: Optional[str] = None  # Plain text password for auth_type="PASSWORD"
+    ssh_key_path: Optional[str] = None  # Path to SSH key (frontend compatibility)
+    is_active: bool = True
+
+    @property
+    def uri(self) -> str:
+        """Generate libvirt URI from hostname and username."""
+        # For SSH connections, use qemu+ssh://user@host/system
+        # Port is handled separately in SSH config if non-standard
+        return f"qemu+ssh://{self.username}@{self.hostname}/system"
 
 
 class KVMHostResponse(BaseModel):
     """KVM host response model."""
     id: int
     name: str
-    uri: str
-    enabled: bool
-    last_sync: Optional[str]
+    hostname: str
+    port: int
+    username: str
+    auth_type: str
+    ssh_key_path: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+    last_connection: Optional[datetime] = None
     storage_capabilities: Optional[StorageCapabilities] = None
 
     class Config:
         from_attributes = True
+
+    @classmethod
+    def from_db_model(cls, host: "KVMHost", storage_caps: Optional[StorageCapabilities] = None):
+        """Create response from database model, parsing URI back to hostname."""
+        # Parse URI like qemu+ssh://root@hostname/system
+        uri = host.uri
+        hostname = uri
+        username = host.username or "root"
+        port = 22
+
+        # Try to parse qemu+ssh://user@host/system format
+        if "qemu+ssh://" in uri:
+            uri_part = uri.replace("qemu+ssh://", "")
+            if "@" in uri_part:
+                user_host = uri_part.split("/")[0]
+                username, hostname = user_host.split("@", 1)
+
+        return cls(
+            id=host.id,
+            name=host.name,
+            hostname=hostname,
+            port=port,
+            username=username,
+            auth_type=host.auth_type,
+            ssh_key_path=None,  # SSH keys are stored separately
+            is_active=host.enabled,
+            created_at=host.created_at,
+            last_connection=None,  # TODO: track last connection time
+            storage_capabilities=storage_caps
+        )
 
 
 class VMResponse(BaseModel):
@@ -176,15 +220,7 @@ async def list_hosts(
                 # Fall back to static config if dynamic detection fails
                 storage_caps = compute_storage_capabilities(host.config)
 
-        host_dict = {
-            "id": host.id,
-            "name": host.name,
-            "uri": host.uri,
-            "enabled": host.enabled,
-            "last_sync": host.last_sync.isoformat() if host.last_sync else None,
-            "storage_capabilities": storage_caps
-        }
-        response.append(host_dict)
+        response.append(KVMHostResponse.from_db_model(host, storage_caps))
 
     return response
 
@@ -197,12 +233,15 @@ async def create_host(
     current_user: User = Depends(require_role(UserRole.OPERATOR))
 ):
     """Create a new KVM host."""
+    # Normalize auth_type (frontend sends "SSH_KEY" or "PASSWORD", backend uses lowercase)
+    auth_type_normalized = host_data.auth_type.lower()
+
     # Test connection first (unless skipped for SSH key setup)
     if not skip_connection_test:
         kvm_service = KVMBackupService()
 
         # For password auth, test with the provided password
-        if host_data.auth_type == "password" and host_data.password:
+        if auth_type_normalized == "password" and host_data.password:
             if not await kvm_service.test_connection(
                 host_data.uri,
                 password=host_data.password,
@@ -221,7 +260,7 @@ async def create_host(
 
     # Encrypt password if provided
     password_encrypted = None
-    if host_data.auth_type == "password" and host_data.password:
+    if auth_type_normalized == "password" and host_data.password:
         try:
             password_encrypted = encrypt_password(
                 host_data.password,
@@ -238,17 +277,17 @@ async def create_host(
         name=host_data.name,
         uri=host_data.uri,
         username=host_data.username,
-        auth_type=host_data.auth_type,
+        auth_type=auth_type_normalized,
         password_encrypted=password_encrypted,
-        config=host_data.config or {},
-        enabled=True
+        config={},
+        enabled=host_data.is_active
     )
 
     db.add(host)
     await db.commit()
     await db.refresh(host)
 
-    return host
+    return KVMHostResponse.from_db_model(host)
 
 
 @router.put("/hosts/{host_id}", response_model=KVMHostResponse)
