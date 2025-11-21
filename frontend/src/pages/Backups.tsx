@@ -321,7 +321,7 @@ const Backups: React.FC = () => {
                         size="small"
                         color="error"
                         onClick={() => handleDeleteClick(backup)}
-                        disabled={backup.is_immutable || backup.legal_hold_enabled}
+                        disabled={backup.immutable || backup.is_immutable || backup.legal_hold_enabled}
                       >
                         <DeleteIcon />
                       </IconButton>
