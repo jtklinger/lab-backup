@@ -246,7 +246,7 @@ const Backups: React.FC = () => {
                       size="small"
                     />
                   </TableCell>
-                  <TableCell>{formatDate(backup.created_at)}</TableCell>
+                  <TableCell>{backup.created_at ? formatDate(backup.created_at) : backup.started_at ? formatDate(backup.started_at) : 'N/A'}</TableCell>
                   <TableCell>
                     {backup.storage_encryption_type && backup.storage_encryption_type !== 'NONE' ? (
                       <Tooltip title={backup.storage_encryption_type}>

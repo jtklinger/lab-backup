@@ -219,7 +219,7 @@ const RestoreWizard: React.FC = () => {
                       Created
                     </Typography>
                     <Typography variant="body2">
-                      {formatDate(backup.created_at)}
+                      {backup.created_at ? formatDate(backup.created_at) : backup.started_at ? formatDate(backup.started_at) : 'N/A'}
                     </Typography>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6 }}>
@@ -372,7 +372,7 @@ const RestoreWizard: React.FC = () => {
                       <strong>{backup.vm_name || backup.container_name}</strong>
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      {formatBytes(backup.size || 0)} • {formatDate(backup.created_at)}
+                      {formatBytes(backup.size || 0)} • {backup.created_at ? formatDate(backup.created_at) : backup.started_at ? formatDate(backup.started_at) : 'N/A'}
                     </Typography>
                   </Grid>
 

@@ -141,28 +141,55 @@ export type StorageEncryptionType = typeof StorageEncryptionType[keyof typeof St
 
 export interface Backup {
   id: number;
-  vm_id?: number;
-  vm_name?: string;
-  container_id?: number;
-  container_name?: string;
-  storage_backend_id: number;
-  storage_backend_name?: string;
-  storage_path: string;
-  size: number;  // Changed from size_bytes to match backend
+  schedule_id?: number;
+  source_name: string;
+  source_type: SourceType;
+  backup_type: string;
+  backup_mode: string;
+  parent_backup_id?: number;
   status: BackupStatus;
-  compression_algorithm?: string;
-  encryption_key_id?: number;
-  storage_encryption_type?: StorageEncryptionType;
-  storage_encryption_key_id?: string;
-  checksum?: string;
-  is_immutable: boolean;
-  immutable_until?: string;
-  legal_hold_enabled: boolean;
-  legal_hold_reason?: string;
-  created_at: string;
-  updated_at: string;
+  size?: number;
+  compressed_size?: number;
+  storage_path?: string;
+  started_at?: string;
   completed_at?: string;
-  error_message?: string;
+  expires_at?: string;
+  // Verification fields
+  verified: boolean;
+  verification_date?: string;
+  verification_status?: string;
+  verification_error?: string;
+  verified_table_count?: number;
+  verified_size_bytes?: number;
+  verification_duration_seconds?: number;
+  // Chain tracking fields
+  chain_id?: string;
+  sequence_number?: number;
+  original_size?: number;
+  dedupe_ratio?: number;
+  compression_ratio?: number;
+  space_saved_bytes?: number;
+  // Immutability fields
+  immutable: boolean;
+  retention_until?: string;
+  retention_mode?: string;
+  immutability_reason?: string;
+  // Storage encryption
+  storage_encryption_type?: string;
+  storage_encryption_key_id?: string;
+  storage_backend_id?: number;
+  // Legacy fields for backward compatibility (deprecated - use source_name)
+  vm_name?: string;
+  container_name?: string;
+  vm_id?: number;
+  container_id?: number;
+  storage_backend_name?: string;
+  is_immutable?: boolean;
+  immutable_until?: string;
+  legal_hold_enabled?: boolean;
+  legal_hold_reason?: string;
+  created_at?: string;
+  compression_algorithm?: string;
 }
 
 // Schedules
