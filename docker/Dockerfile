@@ -21,6 +21,10 @@ RUN apt-get update && apt-get install -y \
     libyajl-dev \
     libxml2-dev \
     libxslt1-dev \
+    libsasl2-2 \
+    libsasl2-modules \
+    libsasl2-modules-gssapi-mit \
+    sasl2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
