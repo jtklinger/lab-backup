@@ -231,10 +231,10 @@ const Backups: React.FC = () => {
                 <TableRow key={backup.id} hover>
                   <TableCell>
                     <Typography variant="body2">
-                      {backup.vm_name || backup.container_name || 'Unknown'}
+                      {backup.source_name || backup.vm_name || backup.container_name || 'Unknown'}
                     </Typography>
                     <Typography variant="caption" color="text.secondary">
-                      {backup.vm_id ? 'VM' : 'Container'}
+                      {backup.source_type === 'vm' ? 'VM' : backup.source_type === 'container' ? 'Container' : (backup.vm_id ? 'VM' : 'Container')}
                     </Typography>
                   </TableCell>
                   <TableCell>{backup.storage_backend_name}</TableCell>
