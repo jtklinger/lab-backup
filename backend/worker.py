@@ -327,6 +327,9 @@ async def _backup_vm(db, schedule, backup, job):
         # Execute backup
         kvm_service = KVMBackupService()
 
+        # Setup authentication for KVM host if using password auth
+        await kvm_service.setup_auth_for_host(db, kvm_host.id)
+
         # Determine if incremental backup is requested
         from backend.models.backup import BackupMode
         is_incremental = hasattr(backup, 'backup_mode') and backup.backup_mode == BackupMode.INCREMENTAL
