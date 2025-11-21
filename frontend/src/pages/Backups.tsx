@@ -25,6 +25,11 @@ import {
   CircularProgress,
   Alert,
   Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from '@mui/material';
 import Grid from '@mui/material/Grid';
 import {
@@ -36,18 +41,22 @@ import {
   Gavel as LegalHoldIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
+import { useSnackbar } from 'notistack';
 import api, { handleApiError } from '../services/api';
 import type { Backup, PaginatedResponse } from '../types';
 import { BackupStatus } from '../types';
 
 const Backups: React.FC = () => {
   const navigate = useNavigate();
+  const { enqueueSnackbar } = useSnackbar();
   const [backups, setBackups] = useState<Backup[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [backupToDelete, setBackupToDelete] = useState<Backup | null>(null);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -100,6 +109,31 @@ const Backups: React.FC = () => {
   const handleStatusFilterChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setStatusFilter(event.target.value);
     setPage(0);
+  };
+
+  const handleDeleteClick = (backup: Backup) => {
+    setBackupToDelete(backup);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteCancel = () => {
+    setDeleteDialogOpen(false);
+    setBackupToDelete(null);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!backupToDelete) return;
+
+    try {
+      await api.delete(`/backups/${backupToDelete.id}`);
+      enqueueSnackbar('Backup deleted successfully', { variant: 'success' });
+      setDeleteDialogOpen(false);
+      setBackupToDelete(null);
+      // Refresh the list
+      fetchBackups();
+    } catch (err) {
+      enqueueSnackbar(handleApiError(err), { variant: 'error' });
+    }
   };
 
   const getStatusColor = (status: BackupStatus): 'success' | 'error' | 'warning' | 'info' | 'default' => {
@@ -286,6 +320,7 @@ const Backups: React.FC = () => {
                       <IconButton
                         size="small"
                         color="error"
+                        onClick={() => handleDeleteClick(backup)}
                         disabled={backup.is_immutable || backup.legal_hold_enabled}
                       >
                         <DeleteIcon />
@@ -307,6 +342,29 @@ const Backups: React.FC = () => {
           onRowsPerPageChange={handleChangeRowsPerPage}
         />
       </TableContainer>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={handleDeleteCancel}
+      >
+        <DialogTitle>Delete Backup</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Are you sure you want to delete the backup of{' '}
+            <strong>
+              {backupToDelete?.source_name || backupToDelete?.vm_name || backupToDelete?.container_name}
+            </strong>?
+            This action cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleDeleteCancel}>Cancel</Button>
+          <Button onClick={handleDeleteConfirm} color="error" variant="contained">
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
