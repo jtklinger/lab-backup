@@ -236,27 +236,16 @@ async def create_host(
     # Normalize auth_type (frontend sends "SSH_KEY" or "PASSWORD", backend uses lowercase)
     auth_type_normalized = host_data.auth_type.lower()
 
-    # Test connection first (unless skipped for SSH key setup)
-    if not skip_connection_test:
+    # Skip connection test for password auth because libvirt doesn't support interactive password prompts
+    # User can test connection manually after creation using the test endpoint
+    # For SSH key auth, test connection if not explicitly skipped
+    if not skip_connection_test and auth_type_normalized != "password":
         kvm_service = KVMBackupService()
-
-        # For password auth, test with the provided password
-        if auth_type_normalized == "password" and host_data.password:
-            if not await kvm_service.test_connection(
-                host_data.uri,
-                password=host_data.password,
-                username=host_data.username
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Failed to connect to KVM host with provided credentials"
-                )
-        else:
-            if not await kvm_service.test_connection(host_data.uri):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Failed to connect to KVM host"
-                )
+        if not await kvm_service.test_connection(host_data.uri):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to connect to KVM host. Please verify SSH key authentication is configured."
+            )
 
     # Encrypt password if provided
     password_encrypted = None

@@ -769,7 +769,7 @@ const KVMHostsTab: React.FC = () => {
                   label="Hostname"
                   required
                   error={!!errors.hostname}
-                  helperText={errors.hostname?.message}
+                  helperText={errors.hostname?.message || 'DNS name or IP address'}
                   {...register('hostname')}
                 />
               </Grid>
@@ -787,16 +787,6 @@ const KVMHostsTab: React.FC = () => {
               <Grid size={{ xs: 12 }}>
                 <TextField
                   fullWidth
-                  label="Username"
-                  required
-                  error={!!errors.username}
-                  helperText={errors.username?.message}
-                  {...register('username')}
-                />
-              </Grid>
-              <Grid size={{ xs: 12 }}>
-                <TextField
-                  fullWidth
                   select
                   label="Authentication Type"
                   required
@@ -808,6 +798,16 @@ const KVMHostsTab: React.FC = () => {
                   <MenuItem value="SSH_KEY">SSH Key</MenuItem>
                   <MenuItem value="PASSWORD">Password</MenuItem>
                 </TextField>
+              </Grid>
+              <Grid size={{ xs: 12 }}>
+                <TextField
+                  fullWidth
+                  label="Username"
+                  required
+                  error={!!errors.username}
+                  helperText={errors.username?.message}
+                  {...register('username')}
+                />
               </Grid>
               {authType === 'SSH_KEY' ? (
                 <Grid size={{ xs: 12 }}>
