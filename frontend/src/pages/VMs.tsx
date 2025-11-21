@@ -114,10 +114,12 @@ const VMs: React.FC = () => {
     if (!selectedVM) return;
 
     try {
-      await api.post('/backups', {
-        vm_id: selectedVM.id,
+      await api.post('/backups/trigger', {
+        source_type: 'vm',
+        source_id: selectedVM.id,
+        backup_mode: 'full',
         storage_backend_id: 1, // TODO: Allow selection
-        compression_algorithm: 'gzip',
+        encryption_enabled: false,
       });
       setBackupDialogOpen(false);
       setSelectedVM(null);

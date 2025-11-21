@@ -114,10 +114,12 @@ const Containers: React.FC = () => {
     if (!selectedContainer) return;
 
     try {
-      await api.post('/backups', {
-        container_id: selectedContainer.id,
+      await api.post('/backups/trigger', {
+        source_type: 'container',
+        source_id: selectedContainer.id,
+        backup_mode: 'full',
         storage_backend_id: 1, // TODO: Allow selection
-        compression_algorithm: 'gzip',
+        encryption_enabled: false,
       });
       setBackupDialogOpen(false);
       setSelectedContainer(null);

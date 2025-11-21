@@ -170,7 +170,7 @@ const BackupWizard: React.FC = () => {
         payload.legal_hold_reason = data.legalHoldReason;
       }
 
-      await api.post('/backups', payload);
+      await api.post('/backups/trigger', payload);
       enqueueSnackbar('Backup created successfully', { variant: 'success' });
 
       // Navigate to backups page

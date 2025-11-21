@@ -4,8 +4,10 @@ Backup schedule and backup models.
 from datetime import datetime
 from typing import Optional, Dict, Any
 from sqlalchemy import String, Integer, BigInteger, Boolean, JSON, ForeignKey, DateTime, Enum as SQLEnum, Text, Float
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 import enum
+import uuid
 
 from backend.models.base import Base
 
@@ -207,8 +209,8 @@ class Backup(Base):
     )
 
     # Backup chain tracking (Issue #10)
-    chain_id: Mapped[Optional[str]] = mapped_column(
-        String(36),  # UUID as string
+    chain_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
         nullable=True,
         index=True,
         comment="UUID grouping related backups (full + incrementals)"
