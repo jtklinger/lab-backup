@@ -90,9 +90,16 @@ class KVMHostCreate(BaseModel):
     @property
     def uri(self) -> str:
         """Generate libvirt URI from hostname and username."""
-        # For SSH connections, use qemu+ssh://user@host/system
-        # Port is handled separately in SSH config if non-standard
-        return f"qemu+ssh://{self.username}@{self.hostname}/system"
+        # For password auth, use qemu+tcp:// with SASL
+        # For SSH key auth, use qemu+ssh://
+        if self.auth_type.lower() == "password":
+            # TCP connection for password/SASL authentication
+            # Default libvirt TLS port is 16514, non-TLS is 16509
+            # Using TLS port for security
+            return f"qemu+tcp://{self.hostname}/system"
+        else:
+            # SSH connection for key-based authentication
+            return f"qemu+ssh://{self.username}@{self.hostname}/system"
 
 
 class KVMHostResponse(BaseModel):
@@ -115,18 +122,25 @@ class KVMHostResponse(BaseModel):
     @classmethod
     def from_db_model(cls, host: "KVMHost", storage_caps: Optional[StorageCapabilities] = None):
         """Create response from database model, parsing URI back to hostname."""
-        # Parse URI like qemu+ssh://root@hostname/system
+        # Parse URI - can be qemu+ssh://user@host/system or qemu+tcp://host/system
         uri = host.uri
         hostname = uri
         username = host.username or "root"
         port = 22
 
-        # Try to parse qemu+ssh://user@host/system format
+        # Parse qemu+ssh://user@host/system format
         if "qemu+ssh://" in uri:
             uri_part = uri.replace("qemu+ssh://", "")
             if "@" in uri_part:
                 user_host = uri_part.split("/")[0]
                 username, hostname = user_host.split("@", 1)
+            port = 22
+        # Parse qemu+tcp://host/system format
+        elif "qemu+tcp://" in uri:
+            uri_part = uri.replace("qemu+tcp://", "")
+            hostname = uri_part.split("/")[0]
+            # TCP port is typically 16514 for TLS or 16509 for non-TLS
+            port = 16514
 
         return cls(
             id=host.id,
@@ -387,15 +401,13 @@ async def test_host_connection(
     try:
         # Setup authentication based on auth type
         if host.auth_type == "password":
-            # Note: libvirt qemu+ssh:// connections do not support password authentication
-            # Password auth requires qemu+tcp:// with SASL, or using sshpass/expect
-            # For now, we'll attempt the connection but it will likely fail
-            # Recommendation: Use SSH key authentication for KVM hosts
+            # Password auth uses qemu+tcp:// with SASL authentication
             from backend.core.encryption import decrypt_password
             if host.password_encrypted:
                 try:
                     password = decrypt_password(host.password_encrypted, settings.SECRET_KEY)
-                    # Attempt connection (will likely fail with qemu+ssh://)
+                    # Test TCP connection with SASL/password authentication
+                    logger.info(f"Testing qemu+tcp:// connection to {host.name} with password auth")
                     success = await kvm_service.test_connection(
                         host.uri,
                         password=password,
@@ -404,15 +416,15 @@ async def test_host_connection(
                     if not success:
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Password authentication failed. libvirt qemu+ssh:// connections require SSH key authentication. Please use SSH keys or configure qemu+tcp:// with SASL authentication."
+                            detail=f"Failed to connect to {host.name} via qemu+tcp://. Please verify: 1) libvirtd TCP listener is enabled on port 16514, 2) SASL authentication is configured, 3) Username and password are correct."
                         )
                 except HTTPException:
                     raise
                 except Exception as e:
-                    logger.error(f"Failed to test connection for host {host.name}: {e}")
+                    logger.error(f"Failed to test TCP connection for host {host.name}: {e}")
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Password authentication is not supported for SSH-based libvirt connections. Please use SSH key authentication instead."
+                        detail=f"Connection failed: {str(e)}. Ensure libvirtd is configured for TCP connections with SASL authentication."
                     )
             else:
                 raise HTTPException(
