@@ -228,6 +228,10 @@ async def list_backups(
     result = await db.execute(stmt)
     items = result.scalars().all()
 
+    # Debug logging
+    if items:
+        print(f"DEBUG: First backup - source_name: {items[0].source_name}, source_type: {items[0].source_type}")
+
     return PaginatedResponse(items=items, total=total, limit=limit, offset=offset)
 
 
