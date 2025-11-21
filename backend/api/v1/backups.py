@@ -2,10 +2,11 @@
 Backup API endpoints.
 """
 from datetime import datetime, timedelta
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from typing import List, Optional, Generic, TypeVar
 
 from backend.models.base import get_db
@@ -66,6 +67,11 @@ class BackupResponse(BaseModel):
     # Storage encryption metadata (Issue #12)
     storage_encryption_type: Optional[str] = "NONE"
     storage_encryption_key_id: Optional[str] = None
+
+    @field_serializer('chain_id')
+    def serialize_chain_id(self, chain_id: Optional[UUID], _info) -> Optional[str]:
+        """Convert UUID to string for JSON serialization."""
+        return str(chain_id) if chain_id else None
 
     class Config:
         from_attributes = True
