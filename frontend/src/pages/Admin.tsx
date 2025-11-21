@@ -586,7 +586,7 @@ const KVMHostsTab: React.FC = () => {
   const handleTest = async (id: number) => {
     try {
       setTestingHost(id);
-      await api.post(`/kvm-hosts/${id}/test`);
+      await api.post(`/kvm/hosts/${id}/test`);
       enqueueSnackbar('Connection test successful!', { variant: 'success' });
       await fetchHosts();
     } catch (err) {

@@ -368,6 +368,69 @@ async def delete_host(
     return None
 
 
+@router.post("/hosts/{host_id}/test")
+async def test_host_connection(
+    host_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Test connection to a KVM host."""
+    host = await db.get(KVMHost, host_id)
+    if not host:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="KVM host not found"
+        )
+
+    kvm_service = KVMBackupService()
+
+    try:
+        # Setup authentication based on auth type
+        if host.auth_type == "password":
+            # For password auth, decrypt password and pass it
+            from backend.core.encryption import decrypt_password
+            if host.password_encrypted:
+                try:
+                    password = decrypt_password(host.password_encrypted, settings.SECRET_KEY)
+                    # Test connection with password
+                    success = await kvm_service.test_connection(
+                        host.uri,
+                        password=password,
+                        username=host.username
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to decrypt password for host {host.name}: {e}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to decrypt stored password"
+                    )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No password stored for this host"
+                )
+        else:
+            # For SSH key auth, setup key and test
+            await kvm_service.setup_ssh_key_for_host(db, host.id, host.uri)
+            success = await kvm_service.test_connection(host.uri)
+
+        if success:
+            return {"status": "success", "message": f"Successfully connected to {host.name}"}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to connect to {host.name}. Please verify credentials and network connectivity."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error testing connection to host {host.name}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Connection test failed: {str(e)}"
+        )
+
+
 @router.get("/vms", response_model=PaginatedResponse[VMResponse])
 async def list_all_vms(
     host_id: Optional[int] = None,
