@@ -24,6 +24,8 @@ import {
   CardContent,
   Chip,
   Divider,
+  Checkbox,
+  FormGroup,
 } from '@mui/material';
 import Grid from '@mui/material/Grid';
 import {
@@ -47,7 +49,9 @@ const BackupWizard: React.FC = () => {
   const [vms, setVMs] = useState<VM[]>([]);
   const [containers, setContainers] = useState<Container[]>([]);
   const [storageBackends, setStorageBackends] = useState<StorageBackend[]>([]);
+  const [vmDisks, setVmDisks] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingDisks, setIsLoadingDisks] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -66,6 +70,8 @@ const BackupWizard: React.FC = () => {
       vmId: null,
       containerId: null,
       storageBackendId: null,
+      backupMode: 'full',
+      retentionDays: 30,
       compressionAlgorithm: 'gzip',
       encryptionEnabled: false,
       encryptionKeyId: null,
@@ -75,6 +81,7 @@ const BackupWizard: React.FC = () => {
       legalHold: false,
       legalHoldReason: '',
       description: '',
+      excludedDisks: [],
     },
   });
 
@@ -101,6 +108,34 @@ const BackupWizard: React.FC = () => {
       setIsLoading(false);
     }
   };
+
+  const fetchVMDisks = async (vmId: number) => {
+    try {
+      setIsLoadingDisks(true);
+      const response = await api.get(`/kvm/vms/${vmId}`);
+      const vm = response.data;
+      // Extract disk information from VM details
+      if (vm.disks && Array.isArray(vm.disks)) {
+        setVmDisks(vm.disks);
+      } else {
+        setVmDisks([]);
+      }
+    } catch (err) {
+      console.error('Failed to fetch VM disks:', err);
+      setVmDisks([]);
+    } finally {
+      setIsLoadingDisks(false);
+    }
+  };
+
+  // Fetch disks when VM is selected and we're on the options step
+  useEffect(() => {
+    if (formData.sourceType === 'vm' && formData.vmId && activeStep === 2) {
+      fetchVMDisks(formData.vmId);
+    } else {
+      setVmDisks([]);
+    }
+  }, [formData.vmId, formData.sourceType, activeStep]);
 
   const handleNext = async () => {
     // Trigger validation for current step fields
@@ -138,36 +173,36 @@ const BackupWizard: React.FC = () => {
       setIsSubmitting(true);
       setError(null);
 
+      // Build API payload with correct parameter names
       const payload: any = {
+        source_type: data.sourceType,
+        source_id: data.sourceType === 'vm' ? data.vmId : data.containerId,
+        backup_mode: data.backupMode,
         storage_backend_id: data.storageBackendId,
-        compression_algorithm: data.compressionAlgorithm,
-        description: data.description || undefined,
+        encryption_enabled: data.encryptionEnabled,
+        retention_days: data.retentionDays,
       };
 
-      // Add source
-      if (data.sourceType === 'vm') {
-        payload.vm_id = data.vmId;
-      } else {
-        payload.container_id = data.containerId;
+      // Add optional fields
+      if (data.description) {
+        payload.description = data.description;
       }
 
-      // Add encryption if enabled
-      if (data.encryptionEnabled) {
-        payload.encryption_strategy = data.encryptionStrategy;
-        if (data.encryptionKeyId) {
-          payload.encryption_key_id = data.encryptionKeyId;
-        }
+      if (data.encryptionEnabled && data.encryptionKeyId) {
+        payload.encryption_key_id = data.encryptionKeyId;
       }
 
-      // Add immutability if enabled
-      if (data.immutable) {
+      if (data.immutable && data.immutableDays) {
         payload.immutable_days = data.immutableDays;
       }
 
-      // Add legal hold if enabled
       if (data.legalHold) {
         payload.legal_hold_enabled = true;
         payload.legal_hold_reason = data.legalHoldReason;
+      }
+
+      if (data.excludedDisks && data.excludedDisks.length > 0) {
+        payload.excluded_disks = data.excludedDisks;
       }
 
       await api.post('/backups/trigger', payload);
@@ -316,10 +351,52 @@ const BackupWizard: React.FC = () => {
               Configure Backup Options
             </Typography>
             <Typography variant="body2" color="text.secondary" paragraph>
-              Set compression, encryption, and retention policies.
+              Set backup type, compression, encryption, and retention policies.
             </Typography>
 
             <Grid container spacing={3}>
+              {/* Backup Mode Selection */}
+              <Grid size={{ xs: 12 }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  Backup Type
+                </Typography>
+              </Grid>
+
+              <Grid size={{ xs: 12, md: 6 }}>
+                <TextField
+                  fullWidth
+                  select
+                  label="Backup Mode"
+                  defaultValue="full"
+                  error={!!errors.backupMode}
+                  helperText={errors.backupMode?.message || "Full backup includes all data, incremental only changes since last backup"}
+                  {...register('backupMode')}
+                >
+                  <MenuItem value="full">Full Backup</MenuItem>
+                  <MenuItem value="incremental">Incremental Backup</MenuItem>
+                </TextField>
+              </Grid>
+
+              <Grid size={{ xs: 12, md: 6 }}>
+                <TextField
+                  fullWidth
+                  type="number"
+                  label="Retention Period (Days)"
+                  defaultValue={30}
+                  error={!!errors.retentionDays}
+                  helperText={errors.retentionDays?.message || "Number of days to keep this backup"}
+                  inputProps={{ min: 1, max: 3650 }}
+                  {...register('retentionDays', { valueAsNumber: true })}
+                />
+              </Grid>
+
+              <Grid size={{ xs: 12 }}>
+                <Divider sx={{ my: 2 }} />
+                <Typography variant="subtitle2" gutterBottom>
+                  Compression & Description
+                </Typography>
+              </Grid>
+
               <Grid size={{ xs: 12, md: 6 }}>
                 <TextField
                   fullWidth
@@ -442,6 +519,74 @@ const BackupWizard: React.FC = () => {
                     {...register('legalHoldReason')}
                   />
                 </Grid>
+              )}
+
+              {/* Disk Selection for VMs */}
+              {formData.sourceType === 'vm' && (
+                <>
+                  <Grid size={{ xs: 12 }}>
+                    <Divider sx={{ my: 2 }} />
+                    <Typography variant="subtitle2" gutterBottom>
+                      Disk Selection
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Select which disks to include in the backup. All disks are included by default.
+                    </Typography>
+                  </Grid>
+
+                  <Grid size={{ xs: 12 }}>
+                    {isLoadingDisks ? (
+                      <Box display="flex" alignItems="center" gap={1}>
+                        <CircularProgress size={20} />
+                        <Typography variant="body2">Loading disk information...</Typography>
+                      </Box>
+                    ) : vmDisks.length > 0 ? (
+                      <FormGroup>
+                        {vmDisks.map((disk: any, index: number) => {
+                          const diskId = disk.target || disk.path || `disk-${index}`;
+                          const isExcluded = formData.excludedDisks?.includes(diskId);
+
+                          return (
+                            <FormControlLabel
+                              key={diskId}
+                              control={
+                                <Checkbox
+                                  checked={!isExcluded}
+                                  onChange={(e) => {
+                                    const currentExcluded = formData.excludedDisks || [];
+                                    if (e.target.checked) {
+                                      // Remove from excluded list
+                                      setValue('excludedDisks', currentExcluded.filter((d: string) => d !== diskId));
+                                    } else {
+                                      // Add to excluded list
+                                      setValue('excludedDisks', [...currentExcluded, diskId]);
+                                    }
+                                  }}
+                                />
+                              }
+                              label={
+                                <Box>
+                                  <Typography variant="body2">
+                                    {disk.target || disk.path || `Disk ${index + 1}`}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    {disk.type || 'Unknown type'}
+                                    {disk.size && ` • ${(disk.size / 1024 / 1024 / 1024).toFixed(2)} GB`}
+                                    {disk.protocol === 'rbd' && disk.rbd_pool && ` • RBD Pool: ${disk.rbd_pool}`}
+                                  </Typography>
+                                </Box>
+                              }
+                            />
+                          );
+                        })}
+                      </FormGroup>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">
+                        No disk information available for this VM
+                      </Typography>
+                    )}
+                  </Grid>
+                </>
               )}
             </Grid>
           </Box>

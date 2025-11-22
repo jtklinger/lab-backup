@@ -81,6 +81,7 @@ class TriggerBackupRequest(BaseModel):
     storage_backend_id: int = Field(..., description="ID of storage backend to use")
     encryption_enabled: bool = Field(False, description="Whether to encrypt the backup")
     retention_days: Optional[int] = Field(None, description="Retention period in days (defaults to system setting)")
+    excluded_disks: Optional[list[str]] = Field(None, description="List of disk targets/paths to exclude from backup")
 
 
 async def find_parent_backup(
@@ -162,6 +163,17 @@ async def trigger_backup(
     expires_at = datetime.utcnow() + timedelta(days=retention_days)
 
     # Create backup record
+    backup_metadata = {
+        "one_time": True,
+        "encryption_enabled": request.encryption_enabled,
+        "triggered_by": current_user.username,
+        "triggered_at": datetime.utcnow().isoformat()
+    }
+
+    # Add excluded_disks to metadata if provided
+    if request.excluded_disks:
+        backup_metadata["excluded_disks"] = request.excluded_disks
+
     backup = Backup(
         schedule_id=None,  # One-time backup has no schedule
         source_type=request.source_type,
@@ -173,12 +185,7 @@ async def trigger_backup(
         status=BackupStatus.PENDING,
         storage_backend_id=request.storage_backend_id,
         expires_at=expires_at,
-        backup_metadata={
-            "one_time": True,
-            "encryption_enabled": request.encryption_enabled,
-            "triggered_by": current_user.username,
-            "triggered_at": datetime.utcnow().isoformat()
-        }
+        backup_metadata=backup_metadata
     )
 
     db.add(backup)

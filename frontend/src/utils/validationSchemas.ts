@@ -241,6 +241,8 @@ export const backupWizardSchema = z
     storageBackendId: z.number().nullable(),
 
     // Step 3: Options
+    backupMode: z.enum(['full', 'incremental']),
+    retentionDays: z.number().min(1).max(3650).optional(),
     compressionAlgorithm: requiredString('Compression algorithm'),
     encryptionEnabled: z.boolean(),
     encryptionKeyId: z.number().nullable(),
@@ -250,6 +252,7 @@ export const backupWizardSchema = z
     legalHold: z.boolean(),
     legalHoldReason: z.string().optional(),
     description: z.string().optional(),
+    excludedDisks: z.array(z.string()).optional(),
   })
   .refine(
     (data) => {

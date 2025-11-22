@@ -354,17 +354,23 @@ async def _backup_vm(db, schedule, backup, job):
             db.add(log)
             await db.commit()
 
+        # Get excluded_disks from backup metadata if provided
+        excluded_disks = backup.backup_metadata.get('excluded_disks', []) if backup.backup_metadata else []
+
         # Attempt backup with CBT if requested, with fallback (Issue #15)
         backup_result = None
         cbt_fallback = False
 
         try:
+            # TODO: Pass excluded_disks to create_backup() once disk exclusion is implemented in KVMBackupService
+            # For now, excluded_disks are stored in metadata but not enforced during backup
             backup_result = await kvm_service.create_backup(
                 uri=kvm_host.uri,
                 vm_uuid=vm.uuid,
                 backup_dir=backup_dir,
                 incremental=is_incremental,
                 use_cbt=use_cbt
+                # excluded_disks=excluded_disks  # TODO: Add this parameter to create_backup()
             )
         except Exception as e:
             if use_cbt:
