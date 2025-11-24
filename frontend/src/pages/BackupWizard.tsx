@@ -105,12 +105,20 @@ const BackupWizard: React.FC = () => {
     try {
       setIsLoading(true);
       const [vmsResp, containersResp, storageResp] = await Promise.all([
-        api.get<VM[]>('/kvm/vms'),
-        api.get<Container[]>('/podman/containers'),
+        api.get<any>('/kvm/vms'),
+        api.get<any>('/podman/containers'),
         api.get<StorageBackend[]>('/storage'),
       ]);
-      setVMs(Array.isArray(vmsResp.data) ? vmsResp.data : []);
-      setContainers(Array.isArray(containersResp.data) ? containersResp.data : []);
+
+      // Handle paginated VMs response
+      const vmsData = vmsResp.data?.items || vmsResp.data;
+      setVMs(Array.isArray(vmsData) ? vmsData : []);
+
+      // Handle paginated containers response
+      const containersData = containersResp.data?.items || containersResp.data;
+      setContainers(Array.isArray(containersData) ? containersData : []);
+
+      // Storage is a direct array
       setStorageBackends(Array.isArray(storageResp.data) ? storageResp.data.filter(b => b.enabled) : []);
     } catch (err) {
       setError(handleApiError(err));
