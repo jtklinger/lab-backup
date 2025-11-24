@@ -109,9 +109,9 @@ const BackupWizard: React.FC = () => {
         api.get<Container[]>('/podman/containers'),
         api.get<StorageBackend[]>('/storage'),
       ]);
-      setVMs(vmsResp.data);
-      setContainers(containersResp.data);
-      setStorageBackends(storageResp.data.filter(b => b.enabled));
+      setVMs(Array.isArray(vmsResp.data) ? vmsResp.data : []);
+      setContainers(Array.isArray(containersResp.data) ? containersResp.data : []);
+      setStorageBackends(Array.isArray(storageResp.data) ? storageResp.data.filter(b => b.enabled) : []);
     } catch (err) {
       setError(handleApiError(err));
     } finally {
