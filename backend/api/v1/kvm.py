@@ -642,14 +642,125 @@ async def get_vm(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get VM details."""
+    """Get VM details including disk information."""
     vm = await db.get(VM, vm_id)
     if not vm:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="VM not found"
         )
-    return vm
+
+    # Fetch disk information from libvirt
+    disks = []
+    try:
+        kvm_host = await db.get(KVMHost, vm.kvm_host_id)
+        if kvm_host:
+            import libvirt
+            import xml.etree.ElementTree as ET
+            from functools import partial
+            from asyncio import get_event_loop
+
+            def _get_disks():
+                # Use the same authentication approach as the backup service
+                uri = kvm_host.uri
+                conn = None
+
+                # Check if we need password authentication
+                if kvm_host.auth_type and kvm_host.auth_type.lower() == "password" and kvm_host.password_encrypted:
+                    # Decrypt password
+                    from backend.core.encryption import decrypt_password
+                    from backend.core.config import settings
+                    password = decrypt_password(kvm_host.password_encrypted, settings.SECRET_KEY)
+                    username = kvm_host.username or "root"
+
+                    # Create credential callback
+                    def _auth_callback(credentials, user_data):
+                        for credential in credentials:
+                            if credential[0] == libvirt.VIR_CRED_AUTHNAME:
+                                credential[4] = username
+                            elif credential[0] == libvirt.VIR_CRED_PASSPHRASE:
+                                credential[4] = password
+                            elif credential[0] == libvirt.VIR_CRED_NOECHOPROMPT:
+                                credential[4] = password
+                        return 0
+
+                    # Define which credential types we support
+                    auth = [
+                        [
+                            libvirt.VIR_CRED_AUTHNAME,
+                            libvirt.VIR_CRED_PASSPHRASE,
+                            libvirt.VIR_CRED_NOECHOPROMPT
+                        ],
+                        _auth_callback,
+                        None
+                    ]
+
+                    # Open connection with authentication (read-only)
+                    conn = libvirt.openAuth(uri, auth, libvirt.VIR_CONNECT_RO)
+                else:
+                    # Use standard read-only connection for SSH or other auth methods
+                    conn = libvirt.openReadOnly(uri)
+
+                if conn is None:
+                    raise Exception(f"Failed to connect to libvirt URI: {uri}")
+
+                try:
+                    domain = conn.lookupByUUIDString(vm.uuid)
+                    xml_desc = domain.XMLDesc(0)
+                    root = ET.fromstring(xml_desc)
+
+                    disk_list = []
+                    for disk in root.findall(".//disk[@device='disk']"):
+                        disk_type = disk.get("type")
+                        target_elem = disk.find("target")
+                        target = target_elem.get("dev") if target_elem is not None else "unknown"
+                        source = disk.find("source")
+
+                        disk_info = {
+                            "type": disk_type,
+                            "target": target
+                        }
+
+                        if disk_type == "file" and source is not None:
+                            disk_info["path"] = source.get("file")
+                        elif disk_type == "network" and source is not None:
+                            disk_info["protocol"] = source.get("protocol")
+                            disk_info["rbd_pool"] = source.get("name", "").split("/")[0] if source.get("protocol") == "rbd" else None
+                        elif disk_type == "block" and source is not None:
+                            disk_info["path"] = source.get("dev")
+
+                        disk_list.append(disk_info)
+
+                    return disk_list
+                finally:
+                    conn.close()
+
+            loop = get_event_loop()
+            disks = await loop.run_in_executor(None, _get_disks)
+            # Debug: log disk information
+            import logging
+            logging.info(f"Fetched {len(disks)} disks for VM {vm.name}: {disks}")
+    except Exception as e:
+        # Log error but don't fail the request
+        import logging
+        logging.warning(f"Failed to fetch disk info for VM {vm.name}: {e}", exc_info=True)
+
+    # Convert VM to dict and add disks
+    vm_dict = {
+        "id": vm.id,
+        "kvm_host_id": vm.kvm_host_id,
+        "kvm_host_name": None,  # Could fetch if needed
+        "name": vm.name,
+        "uuid": vm.uuid,
+        "vcpus": vm.vcpus,
+        "memory": vm.memory,
+        "disk_size": vm.disk_size,
+        "state": vm.state,
+        "updated_at": None,
+        "disks": disks
+    }
+
+    return vm_dict
 
 
 # SSH Key Management Endpoints
