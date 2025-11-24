@@ -168,7 +168,8 @@ class VMResponse(BaseModel):
     memory: Optional[int]
     disk_size: Optional[int]
     state: str
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
+    disks: Optional[list] = None  # Disk information for backup selection
 
     class Config:
         from_attributes = True
