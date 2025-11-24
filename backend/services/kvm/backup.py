@@ -487,7 +487,8 @@ Host {hostname}
         backup_dir: Path,
         incremental: bool = False,
         parent_backup: Optional[str] = None,
-        use_cbt: bool = False
+        use_cbt: bool = False,
+        ssh_password: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a backup of a VM.
@@ -499,6 +500,7 @@ Host {hostname}
             incremental: Whether to create incremental backup
             parent_backup: Path to parent backup for incremental
             use_cbt: Whether to use Changed Block Tracking (CBT) for incremental backup (Issue #15)
+            ssh_password: Password for SSH authentication to KVM host (for RBD disk exports)
 
         Returns:
             Dictionary with backup information
@@ -686,13 +688,24 @@ Host {hostname}
                 backed_up_disks = []
 
                 # Extract hostname from URI for SSH commands
+                # Support both qemu+ssh:// and qemu+tcp:// URIs
                 import re
-                ssh_match = re.search(r'ssh://([^@]+@)?([^:/]+)', uri)
                 ssh_host = None
+
+                # Try SSH URI first
+                ssh_match = re.search(r'ssh://([^@]+@)?([^:/]+)', uri)
                 if ssh_match:
                     ssh_user = ssh_match.group(1).rstrip('@') if ssh_match.group(1) else None
                     ssh_hostname = ssh_match.group(2)
                     ssh_host = f"{ssh_user}@{ssh_hostname}" if ssh_user else ssh_hostname
+                else:
+                    # Try TCP URI - extract hostname and construct SSH connection
+                    tcp_match = re.search(r'tcp://([^:/]+)', uri)
+                    if tcp_match:
+                        ssh_hostname = tcp_match.group(1)
+                        # Use root user for TCP connections (default for KVM)
+                        ssh_host = f"root@{ssh_hostname}"
+                        logger.info(f"Converted TCP URI to SSH host for disk operations: {ssh_host}")
 
                 for disk in disks:
                     disk_type = disk.get("type")
@@ -774,13 +787,24 @@ Host {hostname}
                             logger.info(f"Step 1: Converting RBD to temp file on KVM host: {temp_filename}")
 
                             # Step 1: Convert RBD to file on KVM host
-                            convert_cmd = [
-                                "ssh", ssh_host,
-                                "qemu-img", "convert",
-                                "-O", "raw",
-                                f"rbd:{rbd_name}",
-                                temp_filename
-                            ]
+                            # Use sshpass if password is provided
+                            if ssh_password:
+                                convert_cmd = [
+                                    "sshpass", "-p", ssh_password,
+                                    "ssh", "-o", "StrictHostKeyChecking=no", ssh_host,
+                                    "qemu-img", "convert",
+                                    "-O", "raw",
+                                    f"rbd:{rbd_name}",
+                                    temp_filename
+                                ]
+                            else:
+                                convert_cmd = [
+                                    "ssh", ssh_host,
+                                    "qemu-img", "convert",
+                                    "-O", "raw",
+                                    f"rbd:{rbd_name}",
+                                    temp_filename
+                                ]
 
                             subprocess.run(
                                 convert_cmd,
@@ -794,10 +818,17 @@ Host {hostname}
 
                             # Step 2: Stream file back and delete it
                             # Use && to ensure cleanup happens even if successful
-                            stream_cmd = [
-                                "ssh", ssh_host,
-                                f"cat {temp_filename} && rm -f {temp_filename}"
-                            ]
+                            if ssh_password:
+                                stream_cmd = [
+                                    "sshpass", "-p", ssh_password,
+                                    "ssh", "-o", "StrictHostKeyChecking=no", ssh_host,
+                                    f"cat {temp_filename} && rm -f {temp_filename}"
+                                ]
+                            else:
+                                stream_cmd = [
+                                    "ssh", ssh_host,
+                                    f"cat {temp_filename} && rm -f {temp_filename}"
+                                ]
 
                             with open(dest_disk, 'wb') as f:
                                 subprocess.run(
@@ -817,7 +848,10 @@ Host {hostname}
                             logger.error(f"RBD export failed for {target}: {error_msg}")
                             # Try to clean up temp file
                             try:
-                                subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                                if ssh_password:
+                                    subprocess.run(["sshpass", "-p", ssh_password, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                                else:
+                                    subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
                             except:
                                 pass
                             continue
@@ -825,7 +859,10 @@ Host {hostname}
                             logger.error(f"RBD export for {target} timed out")
                             # Try to clean up temp file
                             try:
-                                subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                                if ssh_password:
+                                    subprocess.run(["sshpass", "-p", ssh_password, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                                else:
+                                    subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
                             except:
                                 pass
                             continue

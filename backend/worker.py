@@ -357,6 +357,13 @@ async def _backup_vm(db, schedule, backup, job):
         # Get excluded_disks from backup metadata if provided
         excluded_disks = backup.backup_metadata.get('excluded_disks', []) if backup.backup_metadata else []
 
+        # Get SSH password for disk operations if KVM host uses password authentication
+        ssh_password = None
+        if kvm_host.auth_type and kvm_host.auth_type.lower() == "password" and kvm_host.password_encrypted:
+            from backend.core.encryption import decrypt_password
+            from backend.core.config import settings
+            ssh_password = decrypt_password(kvm_host.password_encrypted, settings.SECRET_KEY)
+
         # Attempt backup with CBT if requested, with fallback (Issue #15)
         backup_result = None
         cbt_fallback = False
@@ -369,7 +376,8 @@ async def _backup_vm(db, schedule, backup, job):
                 vm_uuid=vm.uuid,
                 backup_dir=backup_dir,
                 incremental=is_incremental,
-                use_cbt=use_cbt
+                use_cbt=use_cbt,
+                ssh_password=ssh_password
                 # excluded_disks=excluded_disks  # TODO: Add this parameter to create_backup()
             )
         except Exception as e:
@@ -391,7 +399,8 @@ async def _backup_vm(db, schedule, backup, job):
                     vm_uuid=vm.uuid,
                     backup_dir=backup_dir,
                     incremental=is_incremental,
-                    use_cbt=False
+                    use_cbt=False,
+                    ssh_password=ssh_password
                 )
             else:
                 # Not a CBT backup, re-raise error
