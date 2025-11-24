@@ -5,7 +5,7 @@
  * Related: Issue #16 - React Frontend
  */
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -44,6 +44,7 @@ const steps = ['Select Source', 'Choose Storage', 'Configure Options', 'Review &
 
 const BackupWizard: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { enqueueSnackbar } = useSnackbar();
   const [activeStep, setActiveStep] = useState(0);
   const [vms, setVMs] = useState<VM[]>([]);
@@ -90,6 +91,15 @@ const BackupWizard: React.FC = () => {
   useEffect(() => {
     fetchResources();
   }, []);
+
+  // Pre-fill form if navigated from VMs page
+  useEffect(() => {
+    const state = location.state as any;
+    if (state?.sourceType && state?.vmId) {
+      setValue('sourceType', state.sourceType);
+      setValue('vmId', state.vmId);
+    }
+  }, [location.state, setValue]);
 
   const fetchResources = async () => {
     try {

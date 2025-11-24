@@ -106,8 +106,8 @@ const VMs: React.FC = () => {
   };
 
   const handleBackupVM = (vm: VM) => {
-    setSelectedVM(vm);
-    setBackupDialogOpen(true);
+    // Navigate to backup wizard with pre-selected VM
+    navigate('/backups/create', { state: { sourceType: 'vm', vmId: vm.id } });
   };
 
   const handleCreateBackup = async () => {
