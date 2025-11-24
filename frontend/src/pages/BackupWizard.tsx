@@ -172,7 +172,7 @@ const BackupWizard: React.FC = () => {
       case 1: // Storage selection
         return ['storageBackendId'];
       case 2: // Options
-        return ['compressionAlgorithm', 'immutableDays', 'legalHoldReason'];
+        return ['backupMode', 'retentionDays', 'compressionAlgorithm', 'immutableDays', 'legalHoldReason'];
       default:
         return [];
     }
