@@ -25,6 +25,8 @@ RUN apt-get update && apt-get install -y \
     libsasl2-modules \
     libsasl2-modules-gssapi-mit \
     sasl2-bin \
+    sshpass \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
