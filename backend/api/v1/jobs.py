@@ -30,6 +30,21 @@ class JobResponse(BaseModel):
     class Config:
         from_attributes = True
 
+    @classmethod
+    def from_orm_job(cls, job: Job) -> "JobResponse":
+        """Convert a Job ORM object to a JobResponse."""
+        return cls(
+            id=job.id,
+            type=job.type,
+            status=job.status,
+            backup_id=job.backup_id,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
+            error_message=job.error_message,
+            metadata=job.job_metadata,
+            created_at=job.created_at,
+        )
+
 
 class JobLogResponse(BaseModel):
     id: int
@@ -96,7 +111,9 @@ async def list_jobs(
     result = await db.execute(stmt)
     jobs = result.scalars().all()
 
-    return JobsListResponse(jobs=jobs, total=total, limit=limit, offset=offset)
+    # Convert ORM objects to response models
+    job_responses = [JobResponse.from_orm_job(job) for job in jobs]
+    return JobsListResponse(jobs=job_responses, total=total, limit=limit, offset=offset)
 
 
 @router.get("/{job_id}", response_model=JobResponse)
@@ -113,7 +130,7 @@ async def get_job(
     job = await db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return JobResponse.from_orm_job(job)
 
 
 @router.get("/{job_id}/logs", response_model=List[JobLogResponse])
