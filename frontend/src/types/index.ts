@@ -225,27 +225,79 @@ export interface Schedule {
 
 // Jobs
 export const JobStatus = {
-  PENDING: 'PENDING',
-  RUNNING: 'RUNNING',
-  COMPLETED: 'COMPLETED',
-  FAILED: 'FAILED',
+  PENDING: 'pending',
+  RUNNING: 'running',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+  CANCELLED: 'cancelled',
 } as const;
 
 export type JobStatus = typeof JobStatus[keyof typeof JobStatus];
 
+export const JobType = {
+  BACKUP: 'backup',
+  RESTORE: 'restore',
+  VERIFICATION: 'verification',
+  CLEANUP: 'cleanup',
+  SYNC: 'sync',
+} as const;
+
+export type JobType = typeof JobType[keyof typeof JobType];
+
 export interface Job {
   id: number;
-  backup_id?: number;
-  schedule_id?: number;
-  job_type: string;
+  type: JobType;
   status: JobStatus;
-  progress_percentage?: number;
-  log_output?: string;
-  error_message?: string;
-  created_at: string;
-  updated_at: string;
+  backup_id?: number;
   started_at?: string;
   completed_at?: string;
+  error_message?: string;
+  metadata?: Record<string, any>;
+  created_at: string;
+}
+
+export interface JobLog {
+  id: number;
+  timestamp: string;
+  level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'CRITICAL';
+  message: string;
+  details?: Record<string, any>;
+}
+
+export interface JobsListResponse {
+  jobs: Job[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// WebSocket message types
+export type WSMessage =
+  | { type: 'connected'; job_id: number; status: string; message: string }
+  | { type: 'log'; data: JobLog }
+  | { type: 'status'; status: string }
+  | { type: 'complete'; status: string; message: string }
+  | { type: 'error'; message: string };
+
+// Application Logs (system-level logging)
+export interface ApplicationLog {
+  id: number;
+  timestamp: string;
+  level: string;
+  logger: string;
+  message: string;
+  module?: string;
+  function?: string;
+  exception?: string;
+  job_id?: number;
+  backup_id?: number;
+}
+
+export interface ApplicationLogsResponse {
+  logs: ApplicationLog[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 // Audit Logs

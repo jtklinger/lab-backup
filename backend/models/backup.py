@@ -408,7 +408,7 @@ class Job(Base):
 
 
 class JobLog(Base):
-    """Job execution logs."""
+    """Job execution logs with verbose detail support."""
 
     __tablename__ = "job_logs"
 
@@ -420,10 +420,16 @@ class JobLog(Base):
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=datetime.utcnow,
-        nullable=False
+        nullable=False,
+        index=True
     )
     level: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Structured metadata for verbose logging"
+    )
 
     # Relationships
     job: Mapped["Job"] = relationship(back_populates="logs")

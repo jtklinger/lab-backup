@@ -32,6 +32,32 @@ from backend.services.verification import RecoveryTestService
 
 logger = logging.getLogger(__name__)
 
+
+async def log_job_verbose(db, job_id: int, level: str, message: str, details: dict = None):
+    """
+    Create a verbose job log entry with optional structured details.
+
+    This helper function should be called for every significant operation during
+    job execution to provide comprehensive logging for debugging and monitoring.
+
+    Args:
+        db: Database session
+        job_id: ID of the job
+        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        message: Human-readable log message
+        details: Optional structured metadata (e.g., command details, progress, etc.)
+    """
+    from backend.models.backup import JobLog
+    log = JobLog(
+        job_id=job_id,
+        level=level,
+        message=message,
+        details=details
+    )
+    db.add(log)
+    await db.flush()  # Use flush instead of commit for batching
+
+
 # Initialize Celery
 celery_app = Celery(
     "lab_backup",
@@ -324,8 +350,22 @@ async def _backup_vm(db, schedule, backup, job):
     with tempfile.TemporaryDirectory() as temp_dir:
         backup_dir = Path(temp_dir) / f"vm_{vm.name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
 
-        # Execute backup
-        kvm_service = KVMBackupService()
+        # Create a list to collect logs from the KVM service (runs in executor thread)
+        # These will be persisted after the backup completes
+        pending_logs = []
+
+        def kvm_log_callback(level: str, message: str, details: dict = None):
+            """Callback to capture verbose logs from KVM service."""
+            # Append to pending logs list - will be persisted after backup
+            pending_logs.append({
+                "level": level,
+                "message": message,
+                "details": details,
+                "timestamp": datetime.utcnow()
+            })
+
+        # Execute backup with verbose logging callback
+        kvm_service = KVMBackupService(log_callback=kvm_log_callback)
 
         # Setup authentication for KVM host if using password auth
         await kvm_service.setup_auth_for_host(db, kvm_host.id)
@@ -405,6 +445,20 @@ async def _backup_vm(db, schedule, backup, job):
             else:
                 # Not a CBT backup, re-raise error
                 raise
+
+        # Persist any pending verbose logs from KVM service
+        if pending_logs:
+            for log_entry in pending_logs:
+                log = JobLog(
+                    job_id=job.id,
+                    level=log_entry["level"],
+                    message=log_entry["message"],
+                    details=log_entry.get("details"),
+                    timestamp=log_entry.get("timestamp", datetime.utcnow())
+                )
+                db.add(log)
+            await db.commit()
+            logger.info(f"Persisted {len(pending_logs)} verbose log entries from KVM service")
 
         # Update backup with CBT metadata (Issue #15)
         if use_cbt and not cbt_fallback and 'cbt_metadata' in backup_result:

@@ -137,3 +137,29 @@ def require_role(required_role: UserRole):
         return current_user
 
     return role_checker
+
+
+async def get_current_user_from_token(token: str, db: AsyncSession) -> Optional[User]:
+    """
+    Validate JWT token and return user (for WebSocket auth).
+
+    Unlike get_current_user, this doesn't raise exceptions - returns None on failure.
+    Used for WebSocket connections where we can't use standard HTTP error responses.
+    """
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        username: str = payload.get("sub")
+        if not username:
+            return None
+
+        # Get user from database
+        stmt = select(User).where(User.username == username)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+
+        if user is None or not user.is_active:
+            return None
+
+        return user
+    except JWTError:
+        return None

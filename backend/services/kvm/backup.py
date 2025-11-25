@@ -23,11 +23,40 @@ logger = logging.getLogger(__name__)
 class KVMBackupService:
     """Service for backing up KVM virtual machines using libvirt."""
 
-    def __init__(self):
+    def __init__(self, log_callback=None):
+        """
+        Initialize the KVM backup service.
+
+        Args:
+            log_callback: Optional callback function for verbose logging.
+                          Signature: callback(level: str, message: str, details: dict = None)
+                          This allows the worker to capture detailed logs for job tracking.
+        """
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.connections: Dict[str, libvirt.virConnect] = {}
         # Store auth credentials per URI for automatic use
         self.auth_credentials: Dict[str, tuple[Optional[str], Optional[str]]] = {}  # uri -> (password, username)
+        self.log_callback = log_callback
+
+    def _log(self, level: str, message: str, details: dict = None):
+        """
+        Log a message to both the Python logger and the callback (if set).
+
+        Args:
+            level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+            message: Human-readable log message
+            details: Optional structured metadata
+        """
+        # Always log to Python logger
+        log_method = getattr(logger, level.lower(), logger.info)
+        log_method(message)
+
+        # Call the callback if set (for job log tracking)
+        if self.log_callback:
+            try:
+                self.log_callback(level, message, details)
+            except Exception as e:
+                logger.warning(f"Log callback failed: {e}")
 
     async def _run_in_executor(self, func, *args):
         """Run blocking libvirt call in executor."""
@@ -513,12 +542,21 @@ Host {hostname}
         try:
             conn = await self._run_in_executor(self._get_connection, uri)
 
+            # Capture log method for use in nested function
+            log_fn = self._log
+
             def _backup():
                 # Get domain by UUID
                 domain = conn.lookupByUUIDString(vm_uuid)
                 vm_name = domain.name()
 
-                logger.info(f"Starting backup of VM: {vm_name} ({vm_uuid})")
+                log_fn("INFO", f"Starting backup of VM: {vm_name} ({vm_uuid})", {
+                    "vm_name": vm_name,
+                    "vm_uuid": vm_uuid,
+                    "operation": "backup_start"
+                })
+
+                log_fn("DEBUG", f"Looking up VM by UUID", {"uuid": vm_uuid})
 
                 # Get VM XML configuration
                 xml_desc = domain.XMLDesc(0)
@@ -563,13 +601,21 @@ Host {hostname}
                                         disk_info["rbd_pool"], disk_info["rbd_image"] = rbd_name.split("/", 1)
                                     disks.append(disk_info)
 
+                # Log discovered disks
+                log_fn("INFO", f"Discovered {len(disks)} disk(s) attached to VM", {
+                    "disk_count": len(disks),
+                    "disks": [{"target": d.get("target"), "type": d.get("type"), "protocol": d.get("protocol")} for d in disks]
+                })
+
                 # Create backup directory
                 backup_dir.mkdir(parents=True, exist_ok=True)
+                log_fn("DEBUG", f"Created backup directory: {backup_dir}", {"path": str(backup_dir)})
 
                 # Save VM XML configuration
                 xml_file = backup_dir / "domain.xml"
                 with open(xml_file, 'w') as f:
                     f.write(xml_desc)
+                log_fn("INFO", "Saved VM XML configuration to domain.xml", {"file": str(xml_file)})
 
                 # Get VM info
                 info = domain.info()
@@ -582,10 +628,17 @@ Host {hostname}
                     "disks": disks
                 }
 
+                log_fn("INFO", f"VM state: {self._get_state_name(info[0])}, vCPUs: {info[3]}, Memory: {info[2] // 1024} MB", {
+                    "state": self._get_state_name(info[0]),
+                    "vcpus": info[3],
+                    "memory_mb": info[2] // 1024
+                })
+
                 # Save VM info
                 info_file = backup_dir / "vm_info.json"
                 with open(info_file, 'w') as f:
                     json.dump(vm_info, f, indent=2)
+                log_fn("DEBUG", "Saved VM info to vm_info.json", {"file": str(info_file)})
 
                 # Application consistency via guest agent (Issue #14)
                 from backend.services.kvm.guest_agent import (
@@ -606,7 +659,10 @@ Host {hostname}
                 use_guest_agent = guest_agent.is_guest_agent_available()
 
                 if use_guest_agent:
-                    logger.info(f"Guest agent available, attempting application-consistent backup")
+                    log_fn("INFO", "Guest agent available, attempting application-consistent backup", {
+                        "guest_agent": True,
+                        "operation": "fsfreeze_attempt"
+                    })
 
                     try:
                         # Execute pre-backup script if configured
@@ -614,9 +670,13 @@ Host {hostname}
                         # For now, skip script execution (will be added in worker integration)
 
                         # Freeze filesystem
+                        log_fn("DEBUG", "Freezing filesystem via guest agent...", {"timeout": 30})
                         frozen_count = guest_agent.freeze_filesystem(timeout_seconds=30)
                         fsfreeze_status = FreezeStatus.SUCCESS
-                        logger.info(f"Filesystem frozen ({frozen_count} filesystems)")
+                        log_fn("INFO", f"Filesystem frozen successfully ({frozen_count} filesystems)", {
+                            "frozen_count": frozen_count,
+                            "fsfreeze_status": "SUCCESS"
+                        })
 
                         # Update VM info to indicate app consistency
                         vm_info['application_consistent'] = True
@@ -626,15 +686,23 @@ Host {hostname}
                             json.dump(vm_info, f, indent=2)
 
                     except GuestAgentTimeout:
-                        logger.warning("Filesystem freeze timed out, proceeding with crash-consistent backup")
+                        log_fn("WARNING", "Filesystem freeze timed out, proceeding with crash-consistent backup", {
+                            "fsfreeze_status": "TIMEOUT"
+                        })
                         fsfreeze_status = FreezeStatus.TIMEOUT
                         use_guest_agent = False
                     except GuestAgentError as e:
-                        logger.warning(f"Guest agent operation failed: {e}, proceeding with crash-consistent backup")
+                        log_fn("WARNING", f"Guest agent operation failed: {e}, proceeding with crash-consistent backup", {
+                            "error": str(e),
+                            "fsfreeze_status": "FAILED"
+                        })
                         fsfreeze_status = FreezeStatus.FAILED
                         use_guest_agent = False
                 else:
-                    logger.info("Guest agent not available, creating crash-consistent backup")
+                    log_fn("INFO", "Guest agent not available, creating crash-consistent backup", {
+                        "guest_agent": False,
+                        "fsfreeze_status": "NOT_AVAILABLE"
+                    })
                     fsfreeze_status = FreezeStatus.NOT_AVAILABLE
 
                 # Create snapshot for consistent backup (if VM is running)
@@ -642,6 +710,9 @@ Host {hostname}
                 snapshot_created = False
 
                 if info[0] == libvirt.VIR_DOMAIN_RUNNING:
+                    log_fn("INFO", "VM is running, creating snapshot for consistent backup", {
+                        "snapshot_name": snapshot_name
+                    })
                     try:
                         # Create external snapshot XML
                         snapshot_xml = f"""
@@ -655,33 +726,50 @@ Host {hostname}
                             libvirt.VIR_DOMAIN_SNAPSHOT_CREATE_DISK_ONLY
                         )
                         snapshot_created = True
-                        logger.info(f"Created snapshot for VM: {vm_name}")
+                        log_fn("INFO", f"Created snapshot for VM: {vm_name}", {
+                            "snapshot_name": snapshot_name,
+                            "snapshot_created": True
+                        })
 
                         # If filesystem was frozen, we have application-consistent backup
                         if fsfreeze_status == FreezeStatus.SUCCESS:
                             application_consistent = True
+                            log_fn("INFO", "Application-consistent backup achieved (filesystem was frozen during snapshot)", {
+                                "application_consistent": True
+                            })
 
                     except libvirt.libvirtError as e:
-                        logger.warning(f"Failed to create snapshot (proceeding anyway): {e}")
+                        log_fn("WARNING", f"Failed to create snapshot (proceeding anyway): {e}", {
+                            "error": str(e),
+                            "snapshot_created": False
+                        })
 
                     finally:
                         # Always thaw filesystem if it was frozen
                         if use_guest_agent and fsfreeze_status == FreezeStatus.SUCCESS:
                             try:
+                                log_fn("DEBUG", "Thawing filesystem...", {})
                                 thawed_count = guest_agent.thaw_filesystem()
-                                logger.info(f"Filesystem thawed ({thawed_count} filesystems)")
+                                log_fn("INFO", f"Filesystem thawed ({thawed_count} filesystems)", {
+                                    "thawed_count": thawed_count
+                                })
 
                                 # Execute post-backup script if configured
                                 # TODO: Get script from VM database record
 
                             except Exception as e:
-                                logger.error(f"Failed to thaw filesystem: {e}")
+                                log_fn("ERROR", f"Failed to thaw filesystem: {e}", {
+                                    "error": str(e),
+                                    "critical": True
+                                })
                                 # This is critical - filesystem is still frozen
                                 # Add to script log for visibility
                                 script_log.append(f"ERROR: Failed to thaw filesystem: {e}")
                 else:
                     # VM not running, no snapshot needed
-                    logger.info(f"VM not running, no snapshot created")
+                    log_fn("INFO", "VM not running, no snapshot needed", {
+                        "vm_state": self._get_state_name(info[0])
+                    })
 
                 # Backup disk images
                 total_size = 0
@@ -705,11 +793,25 @@ Host {hostname}
                         ssh_hostname = tcp_match.group(1)
                         # Use root user for TCP connections (default for KVM)
                         ssh_host = f"root@{ssh_hostname}"
-                        logger.info(f"Converted TCP URI to SSH host for disk operations: {ssh_host}")
+                        log_fn("INFO", f"Converted TCP URI to SSH host for disk operations: {ssh_host}", {
+                            "ssh_host": ssh_host,
+                            "original_uri": uri
+                        })
+
+                log_fn("INFO", f"Starting disk backup - {len(disks)} disk(s) to process", {
+                    "disk_count": len(disks),
+                    "ssh_host": ssh_host
+                })
 
                 for disk in disks:
                     disk_type = disk.get("type")
                     target = disk["target"]
+
+                    log_fn("INFO", f"Processing disk: {target} (type: {disk_type})", {
+                        "target": target,
+                        "disk_type": disk_type,
+                        "disk_info": disk
+                    })
 
                     if disk_type == "file":
                         # File-based disk
@@ -718,28 +820,49 @@ Host {hostname}
                         # For file-based disks over SSH, we need to copy from remote host
                         if ssh_host:
                             dest_disk = backup_dir / f"{target}.img"
-                            logger.info(f"Copying file-based disk from remote host: {disk_path}")
+                            log_fn("INFO", f"Copying file-based disk from remote host via SCP: {disk_path}", {
+                                "source": str(disk_path),
+                                "destination": str(dest_disk),
+                                "method": "scp"
+                            })
 
                             import subprocess
                             try:
                                 # Use SCP to copy the disk file from remote host
                                 cmd = ["scp", f"{ssh_host}:{disk_path}", str(dest_disk)]
+                                log_fn("DEBUG", f"Executing SCP command: scp {ssh_host}:{disk_path} {dest_disk}", {
+                                    "command": cmd
+                                })
                                 subprocess.run(cmd, check=True, capture_output=True, text=True)
                                 disk_size = dest_disk.stat().st_size
+                                log_fn("INFO", f"SCP completed for {target}: {disk_size} bytes ({disk_size / 1024**3:.2f} GB)", {
+                                    "target": target,
+                                    "size_bytes": disk_size,
+                                    "size_gb": round(disk_size / 1024**3, 2)
+                                })
                             except subprocess.CalledProcessError as e:
-                                logger.error(f"SCP failed for {target}: {e.stderr}")
+                                log_fn("ERROR", f"SCP failed for {target}: {e.stderr}", {
+                                    "target": target,
+                                    "error": e.stderr,
+                                    "command": cmd
+                                })
                                 continue
                         else:
                             # Local libvirt - direct file access
                             if not disk_path.exists():
-                                logger.warning(f"Disk not found: {disk_path}")
+                                log_fn("WARNING", f"Disk not found: {disk_path}", {
+                                    "path": str(disk_path)
+                                })
                                 continue
 
                             dest_disk = backup_dir / f"{target}.qcow2"
 
                             # Determine backup method based on incremental flag
                             if incremental and disk_path.suffix in [".qcow2", ".qed"]:
-                                logger.info(f"Creating incremental backup of disk: {target}")
+                                log_fn("INFO", f"Creating incremental backup of disk: {target}", {
+                                    "target": target,
+                                    "method": "qemu-img_incremental"
+                                })
                                 import subprocess
                                 try:
                                     cmd = [
@@ -751,16 +874,27 @@ Host {hostname}
                                     ]
                                     subprocess.run(cmd, check=True, capture_output=True, text=True)
                                 except subprocess.CalledProcessError as e:
-                                    logger.error(f"qemu-img failed for {target}: {e.stderr}")
+                                    log_fn("ERROR", f"qemu-img incremental failed for {target}: {e.stderr}, falling back to full copy", {
+                                        "target": target,
+                                        "error": e.stderr
+                                    })
                                     import shutil
                                     shutil.copy2(disk_path, dest_disk)
                             else:
                                 # Full backup - copy entire disk image
-                                logger.info(f"Creating full backup of disk: {target} ({disk_path})")
+                                log_fn("INFO", f"Creating full backup of disk: {target} ({disk_path})", {
+                                    "target": target,
+                                    "source": str(disk_path),
+                                    "method": "file_copy"
+                                })
                                 import shutil
                                 shutil.copy2(disk_path, dest_disk)
 
                             disk_size = dest_disk.stat().st_size
+                            log_fn("INFO", f"Local disk backup completed for {target}: {disk_size} bytes", {
+                                "target": target,
+                                "size_bytes": disk_size
+                            })
 
                     elif disk_type == "network" and disk.get("protocol") == "rbd":
                         # RBD/Ceph disk - export via SSH using qemu-img convert
@@ -770,11 +904,20 @@ Host {hostname}
                         rbd_name = disk.get("rbd_name", "")
 
                         if not ssh_host:
-                            logger.error(f"RBD backup requires SSH connection, but URI is local: {uri}")
+                            log_fn("ERROR", f"RBD backup requires SSH connection, but URI is local: {uri}", {
+                                "uri": uri,
+                                "rbd_name": rbd_name
+                            })
                             continue
 
                         dest_disk = backup_dir / f"{target}.img"
-                        logger.info(f"Exporting RBD disk: {rbd_name} (30 GB, this will take some time)")
+                        log_fn("INFO", f"Starting RBD disk export: {rbd_name}", {
+                            "rbd_name": rbd_name,
+                            "rbd_pool": rbd_pool,
+                            "rbd_image": rbd_image,
+                            "target": target,
+                            "destination": str(dest_disk)
+                        })
 
                         import subprocess
                         import uuid
@@ -784,7 +927,13 @@ Host {hostname}
                             # 2. Stream temp file via SSH and delete it
 
                             temp_filename = f"/tmp/backup_{uuid.uuid4().hex[:8]}.img"
-                            logger.info(f"Step 1: Converting RBD to temp file on KVM host: {temp_filename}")
+                            log_fn("INFO", f"Step 1: Converting RBD to temp file on KVM host: {temp_filename}", {
+                                "step": 1,
+                                "operation": "qemu-img_convert",
+                                "source": f"rbd:{rbd_name}",
+                                "temp_file": temp_filename,
+                                "ssh_host": ssh_host
+                            })
 
                             # Step 1: Convert RBD to file on KVM host
                             # Use sshpass if password is provided
@@ -814,7 +963,18 @@ Host {hostname}
                                 timeout=7200  # 2 hour timeout for large disks
                             )
 
-                            logger.info(f"Step 2: Streaming temp file to worker and cleaning up")
+                            log_fn("INFO", f"Step 1 completed: RBD converted to temp file", {
+                                "step": 1,
+                                "status": "completed",
+                                "temp_file": temp_filename
+                            })
+
+                            log_fn("INFO", f"Step 2: Streaming temp file to worker and cleaning up", {
+                                "step": 2,
+                                "operation": "ssh_stream",
+                                "source": temp_filename,
+                                "destination": str(dest_disk)
+                            })
 
                             # Step 2: Stream file back and delete it
                             # Use && to ensure cleanup happens even if successful
@@ -841,11 +1001,23 @@ Host {hostname}
                                 )
 
                             disk_size = dest_disk.stat().st_size
-                            logger.info(f"Exported RBD disk {rbd_name}: {disk_size} bytes ({disk_size / 1024**3:.2f} GB)")
+                            log_fn("INFO", f"RBD export completed for {target}: {disk_size} bytes ({disk_size / 1024**3:.2f} GB)", {
+                                "target": target,
+                                "rbd_name": rbd_name,
+                                "size_bytes": disk_size,
+                                "size_gb": round(disk_size / 1024**3, 2),
+                                "step": 2,
+                                "status": "completed"
+                            })
 
                         except subprocess.CalledProcessError as e:
                             error_msg = e.stderr.decode() if e.stderr else str(e)
-                            logger.error(f"RBD export failed for {target}: {error_msg}")
+                            log_fn("ERROR", f"RBD export failed for {target}: {error_msg}", {
+                                "target": target,
+                                "rbd_name": rbd_name,
+                                "error": error_msg,
+                                "error_type": "CalledProcessError"
+                            })
                             # Try to clean up temp file
                             try:
                                 if ssh_password:
@@ -856,7 +1028,12 @@ Host {hostname}
                                 pass
                             continue
                         except subprocess.TimeoutExpired:
-                            logger.error(f"RBD export for {target} timed out")
+                            log_fn("ERROR", f"RBD export for {target} timed out after 2 hours", {
+                                "target": target,
+                                "rbd_name": rbd_name,
+                                "error_type": "TimeoutExpired",
+                                "timeout_seconds": 7200
+                            })
                             # Try to clean up temp file
                             try:
                                 if ssh_password:
@@ -867,7 +1044,12 @@ Host {hostname}
                                 pass
                             continue
                         except Exception as e:
-                            logger.error(f"Unexpected error exporting RBD disk {target}: {e}")
+                            log_fn("ERROR", f"Unexpected error exporting RBD disk {target}: {e}", {
+                                "target": target,
+                                "rbd_name": rbd_name,
+                                "error": str(e),
+                                "error_type": type(e).__name__
+                            })
                             # Try to clean up temp file
                             try:
                                 subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
@@ -875,7 +1057,10 @@ Host {hostname}
                                 pass
                             continue
                     else:
-                        logger.warning(f"Unsupported disk type: {disk_type} for disk {target}")
+                        log_fn("WARNING", f"Unsupported disk type: {disk_type} for disk {target}", {
+                            "target": target,
+                            "disk_type": disk_type
+                        })
                         continue
 
                     total_size += disk_size
@@ -888,16 +1073,36 @@ Host {hostname}
                         "incremental": incremental and disk_type == "file" and disk.get("path", "").endswith((".qcow2", ".qed"))
                     })
 
-                    logger.info(f"Backed up disk: {target} ({disk_size} bytes)")
+                    log_fn("INFO", f"Disk backup completed: {target} ({disk_size} bytes)", {
+                        "target": target,
+                        "size_bytes": disk_size,
+                        "disk_type": disk_type
+                    })
 
                 # Delete snapshot if created
                 if snapshot_created:
+                    log_fn("DEBUG", f"Cleaning up snapshot: {snapshot_name}", {"snapshot_name": snapshot_name})
                     try:
                         snapshot = domain.snapshotLookupByName(snapshot_name)
                         snapshot.delete(libvirt.VIR_DOMAIN_SNAPSHOT_DELETE_METADATA_ONLY)
-                        logger.info(f"Deleted snapshot for VM: {vm_name}")
+                        log_fn("INFO", f"Deleted snapshot for VM: {vm_name}", {
+                            "snapshot_name": snapshot_name,
+                            "snapshot_deleted": True
+                        })
                     except libvirt.libvirtError as e:
-                        logger.warning(f"Failed to delete snapshot: {e}")
+                        log_fn("WARNING", f"Failed to delete snapshot: {e}", {
+                            "snapshot_name": snapshot_name,
+                            "error": str(e)
+                        })
+
+                log_fn("INFO", f"VM backup completed successfully. Total size: {total_size} bytes ({total_size / 1024**3:.2f} GB)", {
+                    "vm_name": vm_name,
+                    "total_size_bytes": total_size,
+                    "total_size_gb": round(total_size / 1024**3, 2),
+                    "disk_count": len(backed_up_disks),
+                    "application_consistent": application_consistent,
+                    "operation": "backup_complete"
+                })
 
                 return {
                     "vm_name": vm_name,
@@ -916,10 +1121,16 @@ Host {hostname}
             return await self._run_in_executor(_backup)
 
         except libvirt.libvirtError as e:
-            logger.error(f"Failed to backup VM: {e}")
+            self._log("ERROR", f"Failed to backup VM: {e}", {
+                "error": str(e),
+                "error_type": "libvirtError"
+            })
             raise
         except Exception as e:
-            logger.error(f"Unexpected error during backup: {e}")
+            self._log("ERROR", f"Unexpected error during backup: {e}", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
             raise
 
     async def create_backup_archive(

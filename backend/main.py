@@ -11,7 +11,7 @@ import asyncio
 
 from backend.core.config import settings
 from backend.core.logging_handler import setup_logging, setup_database_logging, setup_file_logging
-from backend.api.v1 import auth, users, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api, compliance, audit, dashboard
+from backend.api.v1 import auth, users, kvm, podman, storage, schedules, backups, jobs, logs, settings as settings_api, compliance, audit, dashboard, websocket
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
@@ -105,6 +105,7 @@ app.include_router(jobs.router, prefix=f"{settings.API_V1_PREFIX}/jobs", tags=["
 app.include_router(logs.router, prefix=f"{settings.API_V1_PREFIX}/logs", tags=["Logs"])
 app.include_router(compliance.router, prefix=f"{settings.API_V1_PREFIX}/compliance", tags=["Compliance"])
 app.include_router(audit.router, prefix=f"{settings.API_V1_PREFIX}/audit", tags=["Audit"])
+app.include_router(websocket.router, prefix=f"{settings.API_V1_PREFIX}", tags=["WebSocket"])
 
 
 @app.get("/")

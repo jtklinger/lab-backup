@@ -135,3 +135,71 @@ export const sshKeyAPI = {
   delete: (hostId: number, keyId: number) =>
     api.delete(`/kvm/hosts/${hostId}/ssh-keys/${keyId}`),
 };
+
+/**
+ * Jobs API
+ */
+import type { Job, JobLog, JobsListResponse, JobStatus, JobType, ApplicationLogsResponse } from '../types';
+
+export const jobsAPI = {
+  /**
+   * List jobs with filtering and pagination
+   */
+  list: (params?: {
+    status?: JobStatus;
+    job_type?: JobType;
+    start_date?: string;
+    end_date?: string;
+    limit?: number;
+    offset?: number;
+  }) => api.get<JobsListResponse>('/jobs', { params }),
+
+  /**
+   * Get single job details
+   */
+  get: (id: number) => api.get<Job>(`/jobs/${id}`),
+
+  /**
+   * Get logs for a specific job
+   */
+  getLogs: (id: number, level?: string) =>
+    api.get<JobLog[]>(`/jobs/${id}/logs`, { params: level ? { level } : {} }),
+
+  /**
+   * Cancel a running or pending job
+   */
+  cancel: (id: number) => api.post(`/jobs/${id}/cancel`),
+};
+
+/**
+ * Application Logs API
+ */
+export const logsAPI = {
+  /**
+   * Get application logs with filtering
+   */
+  getApplicationLogs: (params?: {
+    level?: string;
+    search?: string;
+    job_id?: number;
+    backup_id?: number;
+    limit?: number;
+    offset?: number;
+  }) => api.get<ApplicationLogsResponse>('/logs/application', { params }),
+
+  /**
+   * Get log statistics
+   */
+  getStats: () => api.get('/logs/application/stats'),
+};
+
+/**
+ * Get WebSocket URL for job logs streaming
+ */
+export const getJobWebSocketUrl = (jobId: number): string => {
+  const token = localStorage.getItem('auth_token');
+  // Use wss for https, ws for http
+  const wsProtocol = API_BASE_URL.startsWith('https') ? 'wss' : 'ws';
+  const wsHost = API_BASE_URL.replace(/^https?:\/\//, '');
+  return `${wsProtocol}://${wsHost}/api/v1/ws/jobs/${jobId}?token=${token}`;
+};
