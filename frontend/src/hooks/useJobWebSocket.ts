@@ -1,15 +1,17 @@
 /**
- * WebSocket hook for real-time job log streaming
+ * WebSocket hook for real-time job log streaming and progress tracking
  *
- * Connects to the job WebSocket endpoint and receives real-time log updates.
+ * Connects to the job WebSocket endpoint and receives real-time log updates
+ * and progress information for running backup jobs.
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getJobWebSocketUrl } from '../services/api';
-import type { JobLog, WSMessage } from '../types';
+import type { JobLog, JobProgress, WSMessage } from '../types';
 
 export interface UseJobWebSocketResult {
   logs: JobLog[];
   status: string | null;
+  progress: JobProgress | null;
   connected: boolean;
   error: string | null;
   isComplete: boolean;
@@ -19,6 +21,7 @@ export interface UseJobWebSocketResult {
 export function useJobWebSocket(jobId: number | null): UseJobWebSocketResult {
   const [logs, setLogs] = useState<JobLog[]>([]);
   const [status, setStatus] = useState<string | null>(null);
+  const [progress, setProgress] = useState<JobProgress | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isComplete, setIsComplete] = useState(false);
@@ -26,6 +29,7 @@ export function useJobWebSocket(jobId: number | null): UseJobWebSocketResult {
 
   const clearLogs = useCallback(() => {
     setLogs([]);
+    setProgress(null);
     setError(null);
     setIsComplete(false);
   }, []);
@@ -40,6 +44,7 @@ export function useJobWebSocket(jobId: number | null): UseJobWebSocketResult {
     // Reset state for new connection
     setLogs([]);
     setStatus(null);
+    setProgress(null);
     setError(null);
     setIsComplete(false);
 
@@ -66,6 +71,10 @@ export function useJobWebSocket(jobId: number | null): UseJobWebSocketResult {
 
           case 'status':
             setStatus(msg.status);
+            break;
+
+          case 'progress':
+            setProgress(msg.data);
             break;
 
           case 'complete':
@@ -111,5 +120,5 @@ export function useJobWebSocket(jobId: number | null): UseJobWebSocketResult {
     };
   }, [jobId, isComplete]);
 
-  return { logs, status, connected, error, isComplete, clearLogs };
+  return { logs, status, progress, connected, error, isComplete, clearLogs };
 }

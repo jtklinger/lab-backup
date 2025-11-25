@@ -346,11 +346,39 @@ export interface JobsListResponse {
   offset: number;
 }
 
+// Job Progress Types (real-time backup progress tracking)
+export interface DiskProgress {
+  target: string;
+  type: 'file' | 'rbd';
+  status: 'pending' | 'transferring' | 'completed' | 'failed';
+  bytes_transferred: number;
+  bytes_total: number;
+  percent: number;
+  transfer_rate_bps: number;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface JobProgress {
+  overall: {
+    percent: number;
+    bytes_transferred: number;
+    bytes_total: number;
+    started_at?: string;
+    eta_seconds: number | null;
+    current_phase: 'preparing' | 'disk_transfer' | 'archiving' | 'encrypting' | 'uploading';
+    current_disk_index: number;
+    total_disks: number;
+  };
+  disks: DiskProgress[];
+}
+
 // WebSocket message types
 export type WSMessage =
   | { type: 'connected'; job_id: number; status: string; message: string }
   | { type: 'log'; data: JobLog }
   | { type: 'status'; status: string }
+  | { type: 'progress'; data: JobProgress }
   | { type: 'complete'; status: string; message: string }
   | { type: 'error'; message: string };
 

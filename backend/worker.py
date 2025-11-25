@@ -29,6 +29,7 @@ from backend.services.podman.backup import PodmanBackupService
 from backend.services.storage import create_storage_backend
 from backend.services.retention.policy import RetentionPolicy
 from backend.services.verification import RecoveryTestService
+from backend.services.progress import create_tracker, remove_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -463,6 +464,29 @@ async def _backup_vm(db, schedule, backup, job):
             from backend.core.config import settings
             ssh_password = decrypt_password(kvm_host.password_encrypted, settings.SECRET_KEY)
 
+        # Initialize progress tracking
+        progress_tracker = create_tracker(job.id)
+        try:
+            # Get VM disk info to initialize progress tracker
+            vm_info = await kvm_service.get_vm_info(kvm_host.uri, vm.uuid)
+            if vm_info.get('disks'):
+                progress_tracker.initialize_disks(vm_info['disks'])
+                progress_tracker.set_phase("disk_transfer")
+                log = JobLog(
+                    job_id=job.id,
+                    level="DEBUG",
+                    message=f"Progress tracking initialized for {len(vm_info['disks'])} disk(s)"
+                )
+                db.add(log)
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"Failed to initialize progress tracker: {e}")
+
+        # Create progress callback for KVM service
+        def on_disk_progress(disk_target: str, bytes_transferred: int, bytes_total: int):
+            """Update progress tracker when disk bytes are transferred."""
+            progress_tracker.update_disk(disk_target, bytes_transferred, bytes_total)
+
         # Attempt backup with checkpoint API or CBT if requested, with fallback (Issue #15)
         backup_result = None
         cbt_fallback = False
@@ -492,7 +516,8 @@ async def _backup_vm(db, schedule, backup, job):
                     backup_dir=backup_dir,
                     incremental=is_incremental,
                     use_cbt=use_cbt,
-                    ssh_password=ssh_password
+                    ssh_password=ssh_password,
+                    progress_callback=on_disk_progress
                     # excluded_disks=excluded_disks  # TODO: Add this parameter to create_backup()
                 )
         except Exception as e:
@@ -516,7 +541,8 @@ async def _backup_vm(db, schedule, backup, job):
                     backup_dir=backup_dir,
                     incremental=False,
                     use_cbt=False,
-                    ssh_password=ssh_password
+                    ssh_password=ssh_password,
+                    progress_callback=on_disk_progress
                 )
                 # Update backup mode to FULL since we fell back
                 backup.backup_mode = BackupMode.FULL
@@ -601,6 +627,9 @@ async def _backup_vm(db, schedule, backup, job):
         db.add(log)
         await db.commit()
 
+        # Update progress phase to archiving
+        progress_tracker.set_phase("archiving")
+
         # Create archive
         archive_file = Path(temp_dir) / f"{backup_dir.name}.tar.gz"
         archive_result = await kvm_service.create_backup_archive(
@@ -676,6 +705,9 @@ async def _backup_vm(db, schedule, backup, job):
 
         # Encrypt backup if we have a key
         if encryption_key_to_use:
+            # Update progress phase to encrypting
+            progress_tracker.set_phase("encrypting")
+
             log = JobLog(
                 job_id=job.id,
                 level="INFO",
@@ -712,6 +744,7 @@ async def _backup_vm(db, schedule, backup, job):
             await db.commit()
 
         # Upload to storage
+        progress_tracker.set_phase("uploading")
 
         storage = create_storage_backend(
             storage_backend_model.type,
@@ -782,6 +815,9 @@ async def _backup_vm(db, schedule, backup, job):
             db.add(log)
 
         await db.commit()
+
+        # Clean up progress tracker
+        remove_tracker(job.id)
 
         return {
             **archive_result,

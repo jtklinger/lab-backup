@@ -1,5 +1,5 @@
 """
-WebSocket endpoints for real-time job log streaming.
+WebSocket endpoints for real-time job log streaming and progress updates.
 """
 import asyncio
 import json
@@ -13,6 +13,7 @@ from backend.models.base import AsyncSessionLocal
 from backend.models.user import User, UserRole
 from backend.models.backup import Job, JobLog, JobStatus
 from backend.core.security import get_current_user_from_token
+from backend.services.progress import get_tracker
 
 router = APIRouter()
 
@@ -73,13 +74,14 @@ async def job_logs_websocket(
     token: str = Query(...)
 ):
     """
-    WebSocket endpoint for real-time job log streaming.
+    WebSocket endpoint for real-time job log streaming and progress updates.
 
     Connect with: ws://host/api/v1/ws/jobs/{job_id}?token={jwt_token}
 
     Messages sent:
     - type: "log" - New log entry
     - type: "status" - Job status update
+    - type: "progress" - Progress update (every 5 seconds, if available)
     - type: "error" - Error message
     - type: "connected" - Initial connection confirmation
     - type: "complete" - Job has completed
@@ -142,8 +144,13 @@ async def job_logs_websocket(
             return
 
         # Poll for new logs while job is running
+        # Progress updates every 5 seconds (5 poll cycles)
+        progress_counter = 0
+        PROGRESS_INTERVAL = 5  # Send progress every 5 seconds
+
         while True:
             await asyncio.sleep(1)  # Poll every second
+            progress_counter += 1
 
             async with AsyncSessionLocal() as poll_db:
                 # Check for new logs
@@ -172,8 +179,28 @@ async def job_logs_websocket(
                         "status": current_job.status.value
                     })
 
+                # Send progress update every PROGRESS_INTERVAL seconds
+                if progress_counter >= PROGRESS_INTERVAL:
+                    progress_counter = 0
+                    tracker = get_tracker(job_id)
+                    if tracker:
+                        progress_data = tracker.get_progress()
+                        await websocket.send_json({
+                            "type": "progress",
+                            "data": progress_data
+                        })
+
                 # If job completed, send complete message and close
                 if current_job.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
+                    # Send final progress if available
+                    tracker = get_tracker(job_id)
+                    if tracker:
+                        progress_data = tracker.get_progress()
+                        await websocket.send_json({
+                            "type": "progress",
+                            "data": progress_data
+                        })
+
                     await websocket.send_json({
                         "type": "complete",
                         "status": current_job.status.value,

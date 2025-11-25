@@ -4,11 +4,14 @@ KVM/libvirt backup service.
 import asyncio
 import os
 import re
+import subprocess
 import tempfile
 import tarfile
 import json
+import threading
+import time
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Callable
 from concurrent.futures import ThreadPoolExecutor
 import libvirt
 import xml.etree.ElementTree as ET
@@ -18,6 +21,169 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.services.kvm.ssh_manager import SSHKeyManager
 
 logger = logging.getLogger(__name__)
+
+
+def copy_file_with_progress(
+    src: Path,
+    dst: Path,
+    callback: Optional[Callable[[int, int], None]] = None,
+    chunk_size: int = 8 * 1024 * 1024  # 8 MB chunks
+) -> int:
+    """
+    Copy a file with progress reporting.
+
+    Args:
+        src: Source file path
+        dst: Destination file path
+        callback: Progress callback (bytes_copied, total_bytes)
+        chunk_size: Size of chunks to read/write
+
+    Returns:
+        Total bytes copied
+    """
+    total = src.stat().st_size
+    copied = 0
+
+    with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
+        while True:
+            chunk = fsrc.read(chunk_size)
+            if not chunk:
+                break
+            fdst.write(chunk)
+            copied += len(chunk)
+            if callback:
+                callback(copied, total)
+
+    return copied
+
+
+def run_scp_with_progress(
+    ssh_host: str,
+    remote_path: str,
+    local_path: Path,
+    callback: Optional[Callable[[int, int], None]] = None,
+    ssh_password: Optional[str] = None,
+    poll_interval: float = 1.0
+) -> int:
+    """
+    Run SCP command with progress monitoring by polling file size.
+
+    Args:
+        ssh_host: SSH host (user@hostname)
+        remote_path: Path on remote host
+        local_path: Local destination path
+        callback: Progress callback (bytes_copied, total_bytes)
+        ssh_password: Optional SSH password
+        poll_interval: How often to check file size (seconds)
+
+    Returns:
+        Total bytes copied
+    """
+    # Build command
+    if ssh_password:
+        cmd = [
+            "sshpass", "-p", ssh_password,
+            "scp", "-o", "StrictHostKeyChecking=no",
+            f"{ssh_host}:{remote_path}",
+            str(local_path)
+        ]
+    else:
+        cmd = ["scp", f"{ssh_host}:{remote_path}", str(local_path)]
+
+    # Start process
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    # Poll file size while process runs
+    total_size = 0  # We don't know total until complete
+    while proc.poll() is None:
+        time.sleep(poll_interval)
+        if local_path.exists():
+            current_size = local_path.stat().st_size
+            if callback:
+                # Report current size; total is unknown so use current as estimate
+                callback(current_size, current_size)
+
+    # Check result
+    if proc.returncode != 0:
+        stderr = proc.stderr.read().decode() if proc.stderr else ""
+        raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
+
+    # Final size
+    final_size = local_path.stat().st_size
+    if callback:
+        callback(final_size, final_size)
+
+    return final_size
+
+
+def run_ssh_stream_with_progress(
+    ssh_host: str,
+    remote_command: str,
+    local_path: Path,
+    callback: Optional[Callable[[int, int], None]] = None,
+    ssh_password: Optional[str] = None,
+    total_size: int = 0,
+    chunk_size: int = 8 * 1024 * 1024
+) -> int:
+    """
+    Run SSH command and stream stdout to file with progress.
+
+    Args:
+        ssh_host: SSH host (user@hostname)
+        remote_command: Command to run on remote host
+        local_path: Local file to write to
+        callback: Progress callback (bytes_copied, total_bytes)
+        ssh_password: Optional SSH password
+        total_size: Expected total size (for progress calculation)
+        chunk_size: Size of chunks to read
+
+    Returns:
+        Total bytes written
+    """
+    # Build command
+    if ssh_password:
+        cmd = [
+            "sshpass", "-p", ssh_password,
+            "ssh", "-o", "StrictHostKeyChecking=no", ssh_host,
+            remote_command
+        ]
+    else:
+        cmd = ["ssh", ssh_host, remote_command]
+
+    # Start process
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+
+    bytes_written = 0
+    with open(local_path, 'wb') as f:
+        while True:
+            chunk = proc.stdout.read(chunk_size)
+            if not chunk:
+                break
+            f.write(chunk)
+            bytes_written += len(chunk)
+            if callback:
+                callback(bytes_written, total_size if total_size > 0 else bytes_written)
+
+    # Wait for process to complete
+    proc.wait()
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.read().decode() if proc.stderr else ""
+        raise subprocess.CalledProcessError(proc.returncode, cmd, stderr=stderr)
+
+    # Final callback
+    if callback:
+        callback(bytes_written, bytes_written)
+
+    return bytes_written
 
 
 class KVMBackupService:
@@ -744,7 +910,8 @@ Host {hostname}
         incremental: bool = False,
         parent_backup: Optional[str] = None,
         use_cbt: bool = False,
-        ssh_password: Optional[str] = None
+        ssh_password: Optional[str] = None,
+        progress_callback: Optional[callable] = None
     ) -> Dict[str, Any]:
         """
         Create a backup of a VM.
@@ -757,6 +924,8 @@ Host {hostname}
             parent_backup: Path to parent backup for incremental
             use_cbt: Whether to use Changed Block Tracking (CBT) for incremental backup (Issue #15)
             ssh_password: Password for SSH authentication to KVM host (for RBD disk exports)
+            progress_callback: Optional callback for progress updates.
+                               Signature: callback(disk_target: str, bytes_transferred: int, bytes_total: int)
 
         Returns:
             Dictionary with backup information
@@ -769,8 +938,10 @@ Host {hostname}
         try:
             conn = await self._run_in_executor(self._get_connection, uri)
 
-            # Capture log method for use in nested function
+            # Capture methods and callbacks for use in nested function
             log_fn = self._log
+            progress_cb = progress_callback
+            ssh_pw = ssh_password
 
             def _backup():
                 # Get domain by UUID
@@ -1053,25 +1224,33 @@ Host {hostname}
                                 "method": "scp"
                             })
 
-                            import subprocess
                             try:
+                                # Create progress callback wrapper for this disk
+                                def disk_progress_cb(bytes_copied, total_bytes):
+                                    if progress_cb:
+                                        progress_cb(target, bytes_copied, total_bytes)
+
                                 # Use SCP to copy the disk file from remote host
-                                cmd = ["scp", f"{ssh_host}:{disk_path}", str(dest_disk)]
-                                log_fn("DEBUG", f"Executing SCP command: scp {ssh_host}:{disk_path} {dest_disk}", {
-                                    "command": cmd
+                                log_fn("DEBUG", f"Executing SCP: {ssh_host}:{disk_path} -> {dest_disk}", {
+                                    "source": str(disk_path),
+                                    "destination": str(dest_disk)
                                 })
-                                subprocess.run(cmd, check=True, capture_output=True, text=True)
-                                disk_size = dest_disk.stat().st_size
+                                disk_size = run_scp_with_progress(
+                                    ssh_host=ssh_host,
+                                    remote_path=str(disk_path),
+                                    local_path=dest_disk,
+                                    callback=disk_progress_cb,
+                                    ssh_password=ssh_pw
+                                )
                                 log_fn("INFO", f"SCP completed for {target}: {disk_size} bytes ({disk_size / 1024**3:.2f} GB)", {
                                     "target": target,
                                     "size_bytes": disk_size,
                                     "size_gb": round(disk_size / 1024**3, 2)
                                 })
                             except subprocess.CalledProcessError as e:
-                                log_fn("ERROR", f"SCP failed for {target}: {e.stderr}", {
+                                log_fn("ERROR", f"SCP failed for {target}: {e.stderr if hasattr(e, 'stderr') else str(e)}", {
                                     "target": target,
-                                    "error": e.stderr,
-                                    "command": cmd
+                                    "error": str(e)
                                 })
                                 continue
                         else:
@@ -1105,8 +1284,15 @@ Host {hostname}
                                         "target": target,
                                         "error": e.stderr
                                     })
-                                    import shutil
-                                    shutil.copy2(disk_path, dest_disk)
+                                    # Fallback copy with progress
+                                    def fallback_progress_cb(bytes_copied, total_bytes):
+                                        if progress_cb:
+                                            progress_cb(target, bytes_copied, total_bytes)
+                                    copy_file_with_progress(
+                                        Path(disk_path),
+                                        dest_disk,
+                                        callback=fallback_progress_cb
+                                    )
                             else:
                                 # Full backup - copy entire disk image
                                 log_fn("INFO", f"Creating full backup of disk: {target} ({disk_path})", {
@@ -1114,8 +1300,15 @@ Host {hostname}
                                     "source": str(disk_path),
                                     "method": "file_copy"
                                 })
-                                import shutil
-                                shutil.copy2(disk_path, dest_disk)
+                                # Use progress-reporting copy
+                                def local_progress_cb(bytes_copied, total_bytes):
+                                    if progress_cb:
+                                        progress_cb(target, bytes_copied, total_bytes)
+                                copy_file_with_progress(
+                                    Path(disk_path),
+                                    dest_disk,
+                                    callback=local_progress_cb
+                                )
 
                             disk_size = dest_disk.stat().st_size
                             log_fn("INFO", f"Local disk backup completed for {target}: {disk_size} bytes", {
@@ -1164,9 +1357,9 @@ Host {hostname}
 
                             # Step 1: Convert RBD to file on KVM host
                             # Use sshpass if password is provided
-                            if ssh_password:
+                            if ssh_pw:
                                 convert_cmd = [
-                                    "sshpass", "-p", ssh_password,
+                                    "sshpass", "-p", ssh_pw,
                                     "ssh", "-o", "StrictHostKeyChecking=no", ssh_host,
                                     "qemu-img", "convert",
                                     "-O", "raw",
@@ -1196,38 +1389,57 @@ Host {hostname}
                                 "temp_file": temp_filename
                             })
 
+                            # Get temp file size for progress tracking
+                            if ssh_pw:
+                                size_cmd = [
+                                    "sshpass", "-p", ssh_pw,
+                                    "ssh", "-o", "StrictHostKeyChecking=no", ssh_host,
+                                    f"stat -c %s {temp_filename}"
+                                ]
+                            else:
+                                size_cmd = ["ssh", ssh_host, f"stat -c %s {temp_filename}"]
+
+                            size_result = subprocess.run(size_cmd, capture_output=True, text=True, timeout=30)
+                            temp_file_size = int(size_result.stdout.strip()) if size_result.returncode == 0 else 0
+
                             log_fn("INFO", f"Step 2: Streaming temp file to worker and cleaning up", {
                                 "step": 2,
                                 "operation": "ssh_stream",
                                 "source": temp_filename,
-                                "destination": str(dest_disk)
+                                "destination": str(dest_disk),
+                                "expected_size": temp_file_size
                             })
 
-                            # Step 2: Stream file back and delete it
-                            # Use && to ensure cleanup happens even if successful
-                            if ssh_password:
-                                stream_cmd = [
-                                    "sshpass", "-p", ssh_password,
-                                    "ssh", "-o", "StrictHostKeyChecking=no", ssh_host,
-                                    f"cat {temp_filename} && rm -f {temp_filename}"
-                                ]
-                            else:
-                                stream_cmd = [
-                                    "ssh", ssh_host,
-                                    f"cat {temp_filename} && rm -f {temp_filename}"
-                                ]
+                            # Step 2: Stream file back with progress tracking
+                            def rbd_progress_cb(bytes_copied, total_bytes):
+                                if progress_cb:
+                                    progress_cb(target, bytes_copied, total_bytes)
 
-                            with open(dest_disk, 'wb') as f:
-                                subprocess.run(
-                                    stream_cmd,
-                                    stdout=f,
-                                    stderr=subprocess.PIPE,
-                                    check=True,
-                                    text=False,
-                                    timeout=3600  # 1 hour for transfer
-                                )
+                            disk_size = run_ssh_stream_with_progress(
+                                ssh_host=ssh_host,
+                                remote_command=f"cat {temp_filename}",
+                                local_path=dest_disk,
+                                callback=rbd_progress_cb,
+                                ssh_password=ssh_pw,
+                                total_size=temp_file_size
+                            )
 
-                            disk_size = dest_disk.stat().st_size
+                            # Step 3: Clean up temp file on remote host
+                            try:
+                                if ssh_pw:
+                                    cleanup_cmd = [
+                                        "sshpass", "-p", ssh_pw,
+                                        "ssh", "-o", "StrictHostKeyChecking=no", ssh_host,
+                                        f"rm -f {temp_filename}"
+                                    ]
+                                else:
+                                    cleanup_cmd = ["ssh", ssh_host, f"rm -f {temp_filename}"]
+                                subprocess.run(cleanup_cmd, timeout=30)
+                            except Exception as cleanup_err:
+                                log_fn("WARNING", f"Failed to clean up temp file {temp_filename}: {cleanup_err}", {
+                                    "temp_file": temp_filename,
+                                    "error": str(cleanup_err)
+                                })
                             log_fn("INFO", f"RBD export completed for {target}: {disk_size} bytes ({disk_size / 1024**3:.2f} GB)", {
                                 "target": target,
                                 "rbd_name": rbd_name,
@@ -1247,8 +1459,8 @@ Host {hostname}
                             })
                             # Try to clean up temp file
                             try:
-                                if ssh_password:
-                                    subprocess.run(["sshpass", "-p", ssh_password, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                                if ssh_pw:
+                                    subprocess.run(["sshpass", "-p", ssh_pw, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host, f"rm -f {temp_filename}"], timeout=30)
                                 else:
                                     subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
                             except:
@@ -1263,8 +1475,8 @@ Host {hostname}
                             })
                             # Try to clean up temp file
                             try:
-                                if ssh_password:
-                                    subprocess.run(["sshpass", "-p", ssh_password, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                                if ssh_pw:
+                                    subprocess.run(["sshpass", "-p", ssh_pw, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host, f"rm -f {temp_filename}"], timeout=30)
                                 else:
                                     subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
                             except:
@@ -1279,7 +1491,10 @@ Host {hostname}
                             })
                             # Try to clean up temp file
                             try:
-                                subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                                if ssh_pw:
+                                    subprocess.run(["sshpass", "-p", ssh_pw, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host, f"rm -f {temp_filename}"], timeout=30)
+                                else:
+                                    subprocess.run(["ssh", ssh_host, f"rm -f {temp_filename}"], timeout=30)
                             except:
                                 pass
                             continue

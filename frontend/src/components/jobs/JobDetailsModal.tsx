@@ -16,18 +16,21 @@ import {
   IconButton,
   Tooltip,
   CircularProgress,
+  LinearProgress,
   Divider,
   Paper,
   Alert,
+  Collapse,
 } from '@mui/material';
 import {
   Close as CloseIcon,
   ContentCopy as CopyIcon,
   Download as DownloadIcon,
   FiberManualRecord as DotIcon,
+  Storage as StorageIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
-import type { Job, JobLog } from '../../types';
+import type { Job, JobLog, JobProgress } from '../../types';
 import { useJobWebSocket } from '../../hooks/useJobWebSocket';
 import { jobsAPI } from '../../services/api';
 
@@ -63,9 +66,10 @@ export function JobDetailsModal({ open, job, onClose }: JobDetailsModalProps) {
 
   // Use WebSocket for running jobs
   const isRunning = job?.status === 'running' || job?.status === 'pending';
-  const { logs: wsLogs, connected, error: wsError, isComplete } = useJobWebSocket(
+  const { logs: wsLogs, progress, connected, error: wsError, isComplete } = useJobWebSocket(
     isRunning && open ? job?.id ?? null : null
   );
+  const [showDiskDetails, setShowDiskDetails] = useState(false);
 
   // Load historical logs for completed/failed jobs
   useEffect(() => {
@@ -152,6 +156,44 @@ export function JobDetailsModal({ open, job, onClose }: JobDetailsModalProps) {
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
   };
 
+  // Format bytes to human-readable size
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+  };
+
+  // Format ETA in human-readable format
+  const formatEta = (seconds: number | null): string => {
+    if (seconds === null || seconds <= 0) return 'Calculating...';
+    if (seconds < 60) return `${Math.round(seconds)}s remaining`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s remaining`;
+    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m remaining`;
+  };
+
+  // Format transfer rate
+  const formatRate = (bps: number): string => {
+    if (bps === 0) return '0 B/s';
+    const k = 1024;
+    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    const i = Math.floor(Math.log(bps) / Math.log(k));
+    return `${parseFloat((bps / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+  };
+
+  // Get phase display name
+  const getPhaseLabel = (phase: string): string => {
+    const labels: Record<string, string> = {
+      preparing: 'Preparing',
+      disk_transfer: 'Transferring Disks',
+      archiving: 'Creating Archive',
+      encrypting: 'Encrypting',
+      uploading: 'Uploading to Storage',
+    };
+    return labels[phase] || phase;
+  };
+
   return (
     <Dialog
       open={open}
@@ -222,6 +264,96 @@ export function JobDetailsModal({ open, job, onClose }: JobDetailsModalProps) {
             </Alert>
           )}
         </Box>
+
+        {/* Progress section - only show when progress data is available */}
+        {progress && isRunning && (
+          <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+            {/* Overall progress */}
+            <Box sx={{ mb: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                <Typography variant="subtitle2">
+                  {getPhaseLabel(progress.overall.current_phase)}
+                  {progress.overall.current_phase === 'disk_transfer' && progress.overall.total_disks > 0 && (
+                    <Typography component="span" variant="caption" sx={{ ml: 1, color: 'text.secondary' }}>
+                      ({progress.overall.current_disk_index + 1} of {progress.overall.total_disks} disks)
+                    </Typography>
+                  )}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {formatEta(progress.overall.eta_seconds)}
+                </Typography>
+              </Box>
+              <LinearProgress
+                variant="determinate"
+                value={progress.overall.percent}
+                sx={{ height: 8, borderRadius: 1, mb: 1 }}
+              />
+              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                <Typography variant="caption" color="text.secondary">
+                  {formatBytes(progress.overall.bytes_transferred)} / {formatBytes(progress.overall.bytes_total)}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {progress.overall.percent.toFixed(1)}%
+                </Typography>
+              </Box>
+            </Box>
+
+            {/* Disk details toggle */}
+            {progress.disks && progress.disks.length > 0 && (
+              <>
+                <Button
+                  size="small"
+                  onClick={() => setShowDiskDetails(!showDiskDetails)}
+                  startIcon={<StorageIcon />}
+                  sx={{ mb: 1 }}
+                >
+                  {showDiskDetails ? 'Hide' : 'Show'} Disk Details ({progress.disks.length})
+                </Button>
+                <Collapse in={showDiskDetails}>
+                  <Box sx={{ pl: 2, borderLeft: '2px solid', borderColor: 'divider' }}>
+                    {progress.disks.map((disk, index) => (
+                      <Box key={disk.target} sx={{ mb: index < progress.disks.length - 1 ? 2 : 0 }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.5 }}>
+                          <Typography variant="body2">
+                            {disk.target}
+                            <Chip
+                              label={disk.status}
+                              size="small"
+                              color={
+                                disk.status === 'completed' ? 'success' :
+                                disk.status === 'transferring' ? 'primary' :
+                                disk.status === 'failed' ? 'error' : 'default'
+                              }
+                              sx={{ ml: 1, height: 20, fontSize: '0.7rem' }}
+                            />
+                          </Typography>
+                          {disk.status === 'transferring' && disk.transfer_rate_bps > 0 && (
+                            <Typography variant="caption" color="text.secondary">
+                              {formatRate(disk.transfer_rate_bps)}
+                            </Typography>
+                          )}
+                        </Box>
+                        <LinearProgress
+                          variant="determinate"
+                          value={disk.percent}
+                          sx={{ height: 4, borderRadius: 1, mb: 0.5 }}
+                          color={
+                            disk.status === 'completed' ? 'success' :
+                            disk.status === 'failed' ? 'error' : 'primary'
+                          }
+                        />
+                        <Typography variant="caption" color="text.secondary">
+                          {formatBytes(disk.bytes_transferred)} / {formatBytes(disk.bytes_total)}
+                          ({disk.percent.toFixed(1)}%)
+                        </Typography>
+                      </Box>
+                    ))}
+                  </Box>
+                </Collapse>
+              </>
+            )}
+          </Paper>
+        )}
 
         {/* Logs section header */}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
