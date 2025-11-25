@@ -100,6 +100,46 @@ class BackupSchedule(Base):
         comment='Recovery Time Objective in minutes'
     )
 
+    # Incremental backup configuration (Issue #15)
+    backup_mode_policy: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default='auto',
+        comment='Backup mode policy: auto, full_only, or incremental_preferred'
+    )
+    max_chain_length: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=14,
+        comment='Maximum incremental backups before forcing a full backup'
+    )
+    full_backup_day: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment='Day for scheduled full backups (0-6 for weekly, 1-31 for monthly)'
+    )
+    last_full_backup_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("backups.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment='ID of the most recent full backup (chain anchor)'
+    )
+    checkpoint_name: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment='Current libvirt checkpoint name for dirty bitmap tracking'
+    )
+    incremental_capable: Mapped[Optional[bool]] = mapped_column(
+        Boolean,
+        nullable=True,
+        comment='Whether the VM/hypervisor supports incremental backups (cached)'
+    )
+    capability_checked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment='When incremental capability was last verified'
+    )
+
     # Relationships
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backup_schedules")
     vm: Mapped[Optional["VM"]] = relationship(
@@ -116,7 +156,12 @@ class BackupSchedule(Base):
     )
     backups: Mapped[list["Backup"]] = relationship(
         back_populates="schedule",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
+        foreign_keys="[Backup.schedule_id]"
+    )
+    last_full_backup: Mapped[Optional["Backup"]] = relationship(
+        foreign_keys=[last_full_backup_id],
+        viewonly=True
     )
 
 

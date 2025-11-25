@@ -509,6 +509,233 @@ Host {hostname}
         }
         return states.get(state, "unknown")
 
+    async def check_incremental_support(
+        self,
+        uri: str,
+        vm_uuid: str
+    ) -> Dict[str, Any]:
+        """
+        Check if a VM and its hypervisor support incremental backups.
+
+        This checks:
+        1. Libvirt version (requires 6.0+ for checkpoint API)
+        2. QEMU version (requires 4.2+ for dirty bitmaps)
+        3. VM disk types (RBD requires different handling)
+        4. Domain checkpoint capability
+
+        Args:
+            uri: Libvirt connection URI
+            vm_uuid: UUID of the VM to check
+
+        Returns:
+            Dictionary with support status and details:
+            - supported: bool - Whether incremental backup is supported
+            - reason: str or None - Reason if not supported
+            - libvirt_version: int - Libvirt version number
+            - qemu_version: tuple or None - QEMU version as (major, minor, patch)
+            - disk_info: list - Disk types and their support status
+            - recommended_method: str - 'checkpoint', 'qcow2_backing', or 'full_only'
+
+        Related: Issue #15 - Implement Changed Block Tracking (CBT)
+        """
+        from backend.services.kvm.checkpoint import CheckpointService
+
+        try:
+            conn = await self._run_in_executor(self._get_connection, uri)
+
+            def _check_support():
+                # Get domain
+                domain = conn.lookupByUUIDString(vm_uuid)
+                vm_name = domain.name()
+
+                result = {
+                    "vm_name": vm_name,
+                    "vm_uuid": vm_uuid,
+                    "supported": False,
+                    "reason": None,
+                    "libvirt_version": 0,
+                    "qemu_version": None,
+                    "disk_info": [],
+                    "recommended_method": "full_only"
+                }
+
+                # Initialize checkpoint service for version checks
+                checkpoint_svc = CheckpointService()
+                support_info = checkpoint_svc.check_checkpoint_support(conn, domain)
+
+                result["libvirt_version"] = support_info["libvirt_version"]
+                result["qemu_version"] = support_info["qemu_version"]
+
+                # Parse VM XML to get disk information
+                xml_desc = domain.XMLDesc(0)
+                root = ET.fromstring(xml_desc)
+
+                has_rbd_disks = False
+                has_file_disks = False
+                all_disks_qcow2 = True
+
+                for disk in root.findall(".//disk[@device='disk']"):
+                    disk_type = disk.get("type")
+                    source = disk.find("source")
+                    target = disk.find("target")
+                    driver = disk.find("driver")
+
+                    if target is None:
+                        continue
+
+                    target_dev = target.get("dev")
+                    disk_info = {
+                        "target": target_dev,
+                        "type": disk_type,
+                        "incremental_capable": False,
+                        "method": None
+                    }
+
+                    if disk_type == "file":
+                        has_file_disks = True
+                        disk_format = driver.get("type") if driver is not None else "raw"
+                        disk_info["format"] = disk_format
+
+                        if disk_format in ["qcow2", "qed"]:
+                            disk_info["incremental_capable"] = True
+                            disk_info["method"] = "checkpoint" if support_info["supported"] else "qcow2_backing"
+                        else:
+                            all_disks_qcow2 = False
+                            # Raw file can use checkpoint if supported
+                            if support_info["supported"]:
+                                disk_info["incremental_capable"] = True
+                                disk_info["method"] = "checkpoint"
+
+                    elif disk_type == "network":
+                        protocol = source.get("protocol") if source is not None else None
+                        if protocol == "rbd":
+                            has_rbd_disks = True
+                            disk_info["protocol"] = "rbd"
+                            disk_info["rbd_name"] = source.get("name") if source is not None else None
+
+                            # RBD requires checkpoint API for incremental
+                            if support_info["supported"]:
+                                disk_info["incremental_capable"] = True
+                                disk_info["method"] = "checkpoint"
+                            else:
+                                disk_info["incremental_capable"] = False
+                                disk_info["reason"] = "RBD disks require libvirt 6.0+ checkpoint API"
+
+                    result["disk_info"].append(disk_info)
+
+                # Determine overall support and recommended method
+                all_disks_capable = all(d["incremental_capable"] for d in result["disk_info"])
+
+                if support_info["supported"]:
+                    # Full checkpoint API support
+                    result["supported"] = True
+                    result["recommended_method"] = "checkpoint"
+                elif has_file_disks and not has_rbd_disks and all_disks_qcow2:
+                    # Fallback to QCOW2 backing file method for file-only setups
+                    result["supported"] = True
+                    result["recommended_method"] = "qcow2_backing"
+                else:
+                    result["supported"] = False
+                    if has_rbd_disks and not support_info["supported"]:
+                        result["reason"] = f"RBD disks require checkpoint API. {support_info.get('reason', 'Libvirt/QEMU version too old')}"
+                    elif not all_disks_capable:
+                        result["reason"] = "Not all disks support incremental backup"
+                    else:
+                        result["reason"] = support_info.get("reason", "Unknown")
+
+                return result
+
+            return await self._run_in_executor(_check_support)
+
+        except libvirt.libvirtError as e:
+            self._log("ERROR", f"Failed to check incremental support: {e}")
+            return {
+                "supported": False,
+                "reason": str(e),
+                "libvirt_version": 0,
+                "qemu_version": None,
+                "disk_info": [],
+                "recommended_method": "full_only"
+            }
+
+    async def determine_backup_mode(
+        self,
+        uri: str,
+        vm_uuid: str,
+        schedule_policy: str = "auto",
+        chain_length: int = 0,
+        max_chain_length: int = 14,
+        force_full: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Determine whether to perform a full or incremental backup.
+
+        This implements the backup mode decision logic based on:
+        - Schedule policy (auto, full_only, incremental_preferred)
+        - Current chain length vs maximum
+        - Hypervisor capability
+        - Force full flag
+
+        Args:
+            uri: Libvirt connection URI
+            vm_uuid: UUID of the VM
+            schedule_policy: Backup mode policy from schedule config
+            chain_length: Current number of incrementals in chain
+            max_chain_length: Maximum chain length before forcing full
+            force_full: Force a full backup regardless of other conditions
+
+        Returns:
+            Dictionary with:
+            - mode: 'full' or 'incremental'
+            - reason: Why this mode was chosen
+            - incremental_method: 'checkpoint' or 'qcow2_backing' (if incremental)
+
+        Related: Issue #15 - Implement Changed Block Tracking (CBT)
+        """
+        result = {
+            "mode": "full",
+            "reason": None,
+            "incremental_method": None
+        }
+
+        # Force full always wins
+        if force_full:
+            result["reason"] = "Full backup requested explicitly"
+            return result
+
+        # Full-only policy
+        if schedule_policy == "full_only":
+            result["reason"] = "Schedule policy requires full backups only"
+            return result
+
+        # Check if chain length exceeded
+        if chain_length >= max_chain_length:
+            result["reason"] = f"Chain length ({chain_length}) reached maximum ({max_chain_length})"
+            return result
+
+        # Need to do first backup as full (no parent to reference)
+        if chain_length == 0:
+            result["reason"] = "First backup in chain must be full"
+            return result
+
+        # Check hypervisor capability
+        support = await self.check_incremental_support(uri, vm_uuid)
+
+        if not support["supported"]:
+            result["reason"] = f"Incremental not supported: {support.get('reason', 'Unknown')}"
+            return result
+
+        # All conditions met for incremental
+        result["mode"] = "incremental"
+        result["incremental_method"] = support["recommended_method"]
+
+        if schedule_policy == "incremental_preferred":
+            result["reason"] = "Incremental preferred by policy and supported"
+        else:
+            result["reason"] = f"Auto mode: chain length {chain_length}/{max_chain_length}, incremental supported"
+
+        return result
+
     async def create_backup(
         self,
         uri: str,
@@ -1525,6 +1752,292 @@ Host {hostname}
             logger.error(f"Unexpected error during restore: {e}")
             raise
 
+    async def create_incremental_backup(
+        self,
+        uri: str,
+        vm_uuid: str,
+        backup_dir: Path,
+        parent_checkpoint: Optional[str] = None,
+        new_checkpoint_name: Optional[str] = None,
+        ssh_password: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create an incremental backup using libvirt checkpoint API.
+
+        This method uses libvirt's checkpoint API to:
+        1. Start a pull-mode backup with NBD exports
+        2. Track changed blocks since the parent checkpoint
+        3. Export only changed blocks to backup files
+        4. Create a new checkpoint for the next incremental
+
+        Args:
+            uri: Libvirt connection URI
+            vm_uuid: UUID of the VM to backup
+            backup_dir: Directory to store backup files
+            parent_checkpoint: Name of parent checkpoint (for incremental)
+            new_checkpoint_name: Name for the new checkpoint to create
+            ssh_password: Password for SSH authentication (for RBD exports)
+
+        Returns:
+            Dictionary with backup information including CBT metadata
+
+        Related: Issue #15 - Implement Changed Block Tracking (CBT)
+        """
+        from backend.services.kvm.checkpoint import CheckpointService, CheckpointError
+        import subprocess
+        import uuid as uuid_module
+
+        log_fn = self._log
+        log_fn("INFO", f"Starting incremental backup of VM {vm_uuid}", {
+            "parent_checkpoint": parent_checkpoint,
+            "new_checkpoint": new_checkpoint_name,
+            "operation": "incremental_backup_start"
+        })
+
+        try:
+            conn = await self._run_in_executor(self._get_connection, uri)
+
+            def _incremental_backup():
+                # Get domain
+                domain = conn.lookupByUUIDString(vm_uuid)
+                vm_name = domain.name()
+
+                log_fn("INFO", f"Creating incremental backup for VM: {vm_name}", {
+                    "vm_name": vm_name,
+                    "vm_uuid": vm_uuid
+                })
+
+                # Initialize checkpoint service
+                checkpoint_svc = CheckpointService(log_callback=log_fn)
+
+                # Check checkpoint support
+                support = checkpoint_svc.check_checkpoint_support(conn, domain)
+                if not support["supported"]:
+                    raise CheckpointError(f"Checkpoint not supported: {support.get('reason')}")
+
+                # Get VM XML to find disk targets
+                xml_desc = domain.XMLDesc(0)
+                root = ET.fromstring(xml_desc)
+
+                disk_targets = []
+                disk_info_map = {}
+
+                for disk in root.findall(".//disk[@device='disk']"):
+                    target = disk.find("target")
+                    source = disk.find("source")
+                    driver = disk.find("driver")
+
+                    if target is None:
+                        continue
+
+                    target_dev = target.get("dev")
+                    disk_targets.append(target_dev)
+
+                    disk_type = disk.get("type")
+                    disk_info = {"target": target_dev, "type": disk_type}
+
+                    if disk_type == "network" and source is not None:
+                        protocol = source.get("protocol")
+                        if protocol == "rbd":
+                            disk_info["protocol"] = "rbd"
+                            disk_info["rbd_name"] = source.get("name")
+
+                    disk_info_map[target_dev] = disk_info
+
+                if not disk_targets:
+                    raise Exception("No disks found for backup")
+
+                log_fn("INFO", f"Found {len(disk_targets)} disk(s) to backup", {
+                    "disk_targets": disk_targets
+                })
+
+                # Create backup directory and scratch directory
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                scratch_dir = backup_dir / "scratch"
+                scratch_dir.mkdir(parents=True, exist_ok=True)
+
+                # Save VM XML configuration
+                xml_file = backup_dir / "domain.xml"
+                with open(xml_file, 'w') as f:
+                    f.write(xml_desc)
+
+                # Generate checkpoint name if not provided
+                if not new_checkpoint_name:
+                    new_checkpoint_name_local = f"backup-{vm_name}-{uuid_module.uuid4().hex[:8]}"
+                else:
+                    new_checkpoint_name_local = new_checkpoint_name
+
+                # Start backup using checkpoint API
+                log_fn("INFO", "Starting pull-mode backup via checkpoint API", {
+                    "checkpoint_name": new_checkpoint_name_local,
+                    "incremental_from": parent_checkpoint
+                })
+
+                try:
+                    nbd_info = checkpoint_svc.start_backup(
+                        domain=domain,
+                        disk_targets=disk_targets,
+                        scratch_dir=str(scratch_dir),
+                        checkpoint_name=new_checkpoint_name_local,
+                        incremental_from=parent_checkpoint
+                    )
+
+                    log_fn("INFO", "Backup started, NBD exports available", {
+                        "nbd_exports": list(nbd_info.keys())
+                    })
+
+                    # Export data from NBD to backup files
+                    backed_up_disks = []
+                    total_size = 0
+                    total_changed_blocks = 0
+
+                    for target_dev, nbd in nbd_info.items():
+                        socket_path = nbd.get("socket")
+                        export_name = nbd.get("export_name", target_dev)
+
+                        if not socket_path:
+                            log_fn("WARNING", f"No socket path for disk {target_dev}, skipping")
+                            continue
+
+                        # Output file for this disk
+                        output_file = backup_dir / f"{target_dev}.qcow2"
+
+                        log_fn("INFO", f"Exporting disk {target_dev} from NBD", {
+                            "socket": socket_path,
+                            "export": export_name,
+                            "output": str(output_file)
+                        })
+
+                        # Use qemu-img to export from NBD
+                        # For incremental, use -B to reference parent and create thin QCOW2
+                        try:
+                            if parent_checkpoint:
+                                # Incremental backup - create sparse QCOW2 with only changed blocks
+                                cmd = [
+                                    "qemu-img", "convert",
+                                    "-f", "raw",
+                                    "-O", "qcow2",
+                                    "-c",  # Compress
+                                    f"nbd+unix:///{export_name}?socket={socket_path}",
+                                    str(output_file)
+                                ]
+                            else:
+                                # Full backup
+                                cmd = [
+                                    "qemu-img", "convert",
+                                    "-f", "raw",
+                                    "-O", "qcow2",
+                                    "-c",  # Compress
+                                    f"nbd+unix:///{export_name}?socket={socket_path}",
+                                    str(output_file)
+                                ]
+
+                            log_fn("DEBUG", f"Running qemu-img: {' '.join(cmd)}")
+
+                            result = subprocess.run(
+                                cmd,
+                                capture_output=True,
+                                text=True,
+                                timeout=7200  # 2 hour timeout
+                            )
+
+                            if result.returncode != 0:
+                                log_fn("ERROR", f"qemu-img failed for {target_dev}: {result.stderr}")
+                                continue
+
+                            disk_size = output_file.stat().st_size
+                            total_size += disk_size
+
+                            backed_up_disks.append({
+                                "target": target_dev,
+                                "file": output_file.name,
+                                "size": disk_size,
+                                "type": disk_info_map.get(target_dev, {}).get("type", "file"),
+                                "incremental": parent_checkpoint is not None
+                            })
+
+                            log_fn("INFO", f"Disk {target_dev} exported: {disk_size} bytes", {
+                                "target": target_dev,
+                                "size_bytes": disk_size,
+                                "size_mb": round(disk_size / 1024**2, 2)
+                            })
+
+                        except subprocess.TimeoutExpired:
+                            log_fn("ERROR", f"qemu-img timed out for {target_dev}")
+                            continue
+                        except Exception as e:
+                            log_fn("ERROR", f"Failed to export {target_dev}: {e}")
+                            continue
+
+                finally:
+                    # Always stop backup to release NBD exports
+                    try:
+                        checkpoint_svc.stop_backup(domain)
+                        log_fn("INFO", "Backup stopped, NBD exports released")
+                    except Exception as e:
+                        log_fn("WARNING", f"Error stopping backup: {e}")
+
+                    # Clean up scratch files
+                    try:
+                        import shutil
+                        shutil.rmtree(scratch_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+
+                # Get VM info
+                info = domain.info()
+                vm_info = {
+                    "name": vm_name,
+                    "uuid": vm_uuid,
+                    "state": self._get_state_name(info[0]),
+                    "vcpus": info[3],
+                    "memory": info[2] // 1024,
+                    "disks": backed_up_disks,
+                    "cbt_enabled": True,
+                    "checkpoint_name": new_checkpoint_name_local,
+                    "parent_checkpoint": parent_checkpoint,
+                    "backup_mode": "incremental" if parent_checkpoint else "full"
+                }
+
+                # Save VM info
+                info_file = backup_dir / "vm_info.json"
+                with open(info_file, 'w') as f:
+                    json.dump(vm_info, f, indent=2)
+
+                log_fn("INFO", f"Incremental backup completed. Total size: {total_size} bytes", {
+                    "total_size_bytes": total_size,
+                    "total_size_mb": round(total_size / 1024**2, 2),
+                    "disk_count": len(backed_up_disks),
+                    "checkpoint_name": new_checkpoint_name_local,
+                    "operation": "incremental_backup_complete"
+                })
+
+                return {
+                    "vm_name": vm_name,
+                    "vm_uuid": vm_uuid,
+                    "state": self._get_state_name(info[0]),
+                    "disks": backed_up_disks,
+                    "total_size": total_size,
+                    "backup_dir": str(backup_dir),
+                    "incremental": parent_checkpoint is not None,
+                    "backup_mode": "incremental" if parent_checkpoint else "full",
+                    "cbt_metadata": {
+                        "cbt_enabled": True,
+                        "checkpoint_name": new_checkpoint_name_local,
+                        "parent_checkpoint": parent_checkpoint,
+                        "method": "checkpoint"
+                    }
+                }
+
+            return await self._run_in_executor(_incremental_backup)
+
+        except Exception as e:
+            self._log("ERROR", f"Incremental backup failed: {e}", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            raise
+
     async def _create_cbt_backup(
         self,
         uri: str,
@@ -1532,10 +2045,10 @@ Host {hostname}
         backup_dir: Path
     ) -> Dict[str, Any]:
         """
-        Create an incremental backup using Changed Block Tracking (CBT).
+        Legacy CBT backup method - redirects to create_incremental_backup.
 
-        This method uses QEMU dirty bitmaps to track changed blocks and exports
-        only the changed blocks via NBD for efficient incremental backups.
+        This method is kept for backward compatibility but now uses the
+        new checkpoint-based incremental backup implementation.
 
         Args:
             uri: Libvirt connection URI
@@ -1547,130 +2060,298 @@ Host {hostname}
 
         Related: Issue #15 - Implement Changed Block Tracking (CBT)
         """
-        from backend.services.kvm.cbt import ChangedBlockTrackingService
-        from backend.services.kvm.nbd_backup import NBDBackupService
+        # Redirect to new implementation
+        return await self.create_incremental_backup(
+            uri=uri,
+            vm_uuid=vm_uuid,
+            backup_dir=backup_dir,
+            parent_checkpoint=None,  # First backup in chain
+            new_checkpoint_name=None  # Auto-generate
+        )
 
-        logger.info(f"Starting CBT-based incremental backup of VM {vm_uuid}")
+    async def merge_incremental_chain(
+        self,
+        chain_dirs: List[Path],
+        output_dir: Path,
+        disk_target: str = "vda"
+    ) -> Dict[str, Any]:
+        """
+        Merge a chain of incremental backups into a single consolidated disk image.
+
+        This function takes the full backup plus all incremental backups in order
+        and produces a single QCOW2 image that can be used for VM restoration.
+
+        Args:
+            chain_dirs: List of backup directories in order (full first, then incrementals)
+            output_dir: Directory to write the merged disk image
+            disk_target: Disk target name (e.g., 'vda')
+
+        Returns:
+            Dictionary with merge results
+
+        Related: Issue #15 - Implement Changed Block Tracking (CBT)
+        """
+        import subprocess
+        import shutil
+
+        log_fn = self._log
+        log_fn("INFO", f"Merging {len(chain_dirs)} backups for disk {disk_target}", {
+            "operation": "merge_chain_start",
+            "chain_length": len(chain_dirs)
+        })
+
+        if not chain_dirs:
+            raise ValueError("No backup directories provided for merge")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            conn = await self._run_in_executor(self._get_connection, uri)
+            # Start with the full backup (first in chain)
+            full_backup_dir = chain_dirs[0]
+            full_disk_file = full_backup_dir / f"{disk_target}.qcow2"
 
-            def _cbt_backup():
-                # Get domain
-                domain = conn.lookupByUUIDString(vm_uuid)
-                vm_name = domain.name()
+            if not full_disk_file.exists():
+                # Try without extension
+                full_disk_file = full_backup_dir / disk_target
+                if not full_disk_file.exists():
+                    raise FileNotFoundError(f"Full backup disk not found: {disk_target}")
 
-                logger.info(f"Using CBT for VM: {vm_name}")
+            # Copy full backup as base
+            merged_file = output_dir / f"{disk_target}.qcow2"
+            log_fn("INFO", f"Copying full backup as merge base", {
+                "source": str(full_disk_file),
+                "destination": str(merged_file)
+            })
 
-                # Initialize CBT service
-                cbt_service = ChangedBlockTrackingService(domain)
+            # Use qemu-img convert to create a standalone copy
+            result = subprocess.run(
+                ["qemu-img", "convert", "-O", "qcow2", str(full_disk_file), str(merged_file)],
+                capture_output=True,
+                text=True,
+                timeout=7200
+            )
 
-                # Check if CBT is supported
-                if not cbt_service.is_cbt_supported():
-                    raise Exception("CBT not supported on this QEMU version (requires >= 4.0)")
+            if result.returncode != 0:
+                raise Exception(f"Failed to copy full backup: {result.stderr}")
 
-                # Get VM XML configuration
-                xml_desc = domain.XMLDesc(0)
-                root = ET.fromstring(xml_desc)
+            # Apply each incremental in order
+            for i, incr_dir in enumerate(chain_dirs[1:], start=1):
+                incr_disk_file = incr_dir / f"{disk_target}.qcow2"
 
-                # Find first disk (for now, backup first disk only)
-                # TODO: Support multiple disks
-                disk_elem = root.find(".//disk[@device='disk']")
-                if disk_elem is None:
-                    raise Exception("No disks found for backup")
+                if not incr_disk_file.exists():
+                    log_fn("WARNING", f"Incremental disk not found, skipping: {incr_disk_file}")
+                    continue
 
-                target_elem = disk_elem.find("target")
-                if target_elem is None:
-                    raise Exception("Disk target not found")
+                log_fn("INFO", f"Applying incremental {i}/{len(chain_dirs)-1}", {
+                    "source": str(incr_disk_file),
+                    "target": str(merged_file)
+                })
 
-                disk_target = target_elem.get("dev")
-                logger.info(f"Backing up disk: {disk_target}")
+                # Rebase the incremental to point to our merged file, then commit
+                # First, create a temporary copy that references our merged file
+                temp_file = output_dir / f"temp_merge_{i}.qcow2"
 
-                # Get or create dirty bitmap
-                bitmap_name = None
-                try:
-                    # Try to find existing bitmap for this VM
-                    # For now, create a new bitmap each time
-                    # TODO: Persist bitmap name in database and reuse
-                    bitmap_name = cbt_service.create_bitmap(disk_target)
-                    logger.info(f"Created dirty bitmap: {bitmap_name}")
-                except Exception as e:
-                    # If bitmap already exists, query it
-                    logger.warning(f"Bitmap creation failed: {e}, attempting to use existing bitmap")
-                    # TODO: Query existing bitmaps and select appropriate one
-                    raise
-
-                # Create backup directory
-                backup_dir.mkdir(parents=True, exist_ok=True)
-
-                # Save VM XML configuration
-                xml_file = backup_dir / "domain.xml"
-                with open(xml_file, 'w') as f:
-                    f.write(xml_desc)
-
-                # Get VM info
-                info = domain.info()
-                vm_info = {
-                    "name": vm_name,
-                    "uuid": vm_uuid,
-                    "state": self._get_state_name(info[0]),
-                    "vcpus": info[3],
-                    "memory": info[2] // 1024,
-                    "cbt_enabled": True,
-                    "bitmap_name": bitmap_name
-                }
-
-                # Save VM info
-                info_file = backup_dir / "vm_info.json"
-                with open(info_file, 'w') as f:
-                    json.dump(vm_info, f, indent=2)
-
-                # Initialize NBD backup service
-                nbd_service = NBDBackupService(domain, cbt_service)
-
-                # Export incremental backup
-                backup_file = backup_dir / f"{disk_target}-incremental.qcow2"
-                backup_stats = nbd_service.export_incremental_backup(
-                    disk_target=disk_target,
-                    bitmap_name=bitmap_name,
-                    output_path=str(backup_file)
+                # Create overlay on merged file
+                result = subprocess.run(
+                    ["qemu-img", "create", "-f", "qcow2", "-b", str(merged_file),
+                     "-F", "qcow2", str(temp_file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
                 )
 
-                logger.info(
-                    f"CBT backup completed: {backup_stats['changed_blocks_count']} "
-                    f"changed blocks, {backup_stats['original_size']} bytes"
+                if result.returncode != 0:
+                    raise Exception(f"Failed to create overlay: {result.stderr}")
+
+                # Copy incremental changes to the overlay
+                # Use qemu-img convert with the incremental as source
+                result = subprocess.run(
+                    ["qemu-img", "convert", "-O", "qcow2", "-B", str(merged_file),
+                     str(incr_disk_file), str(temp_file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=7200
                 )
 
-                # Calculate total size
-                total_size = sum(
-                    f.stat().st_size
-                    for f in backup_dir.glob("**/*")
-                    if f.is_file()
-                )
+                # If convert failed, try an alternative approach - commit changes
+                if result.returncode != 0:
+                    log_fn("DEBUG", f"Direct convert failed, trying rebase approach")
 
-                return {
-                    "total_size": total_size,
-                    "original_size": backup_stats["original_size"],
-                    "compressed_size": backup_stats["compressed_size"],
-                    "disk_count": 1,
-                    "disks": [{
-                        "target": disk_target,
-                        "backup_file": str(backup_file),
-                        "changed_blocks": backup_stats["changed_blocks_count"]
-                    }],
-                    "cbt_metadata": {
-                        "cbt_enabled": True,
-                        "bitmap_name": bitmap_name,
-                        "block_size": backup_stats["block_size"],
-                        "changed_blocks_count": backup_stats["changed_blocks_count"]
-                    }
-                }
+                    # Alternative: copy incremental and rebase
+                    temp_incr = output_dir / f"temp_incr_{i}.qcow2"
+                    shutil.copy2(incr_disk_file, temp_incr)
 
-            return await self._run_in_executor(_cbt_backup)
+                    # Rebase to our merged file
+                    result = subprocess.run(
+                        ["qemu-img", "rebase", "-f", "qcow2", "-b", str(merged_file),
+                         "-F", "qcow2", "-u", str(temp_incr)],
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
 
+                    if result.returncode == 0:
+                        # Commit the changes
+                        result = subprocess.run(
+                            ["qemu-img", "commit", "-f", "qcow2", str(temp_incr)],
+                            capture_output=True,
+                            text=True,
+                            timeout=7200
+                        )
+
+                    # Clean up temporary file
+                    if temp_incr.exists():
+                        temp_incr.unlink()
+
+                # Clean up temporary overlay
+                if temp_file.exists():
+                    temp_file.unlink()
+
+            # Get final merged file info
+            result = subprocess.run(
+                ["qemu-img", "info", "--output=json", str(merged_file)],
+                capture_output=True,
+                text=True
+            )
+
+            merged_size = merged_file.stat().st_size
+
+            log_fn("INFO", f"Chain merge completed", {
+                "operation": "merge_chain_complete",
+                "output_file": str(merged_file),
+                "merged_size": merged_size
+            })
+
+            return {
+                "success": True,
+                "merged_file": str(merged_file),
+                "merged_size": merged_size,
+                "chain_length": len(chain_dirs),
+                "disk_target": disk_target
+            }
+
+        except subprocess.TimeoutExpired:
+            log_fn("ERROR", "Merge operation timed out")
+            raise Exception("Merge operation timed out")
         except Exception as e:
-            logger.error(f"CBT backup failed: {e}")
+            log_fn("ERROR", f"Chain merge failed: {e}")
             raise
+
+    async def restore_from_chain(
+        self,
+        uri: str,
+        chain_backup_dirs: List[Path],
+        new_name: Optional[str] = None,
+        overwrite: bool = False,
+        storage_type: str = "auto",
+        storage_config: Optional[dict] = None,
+        host_config: Optional[dict] = None
+    ) -> Dict[str, Any]:
+        """
+        Restore a VM from a chain of incremental backups.
+
+        This method:
+        1. Merges all incremental backups into a single disk image
+        2. Restores the VM using the merged image
+
+        Args:
+            uri: Libvirt connection URI
+            chain_backup_dirs: List of backup directories (full first, then incrementals)
+            new_name: Optional new name for the restored VM
+            overwrite: Whether to overwrite existing VM
+            storage_type: Storage type: "auto", "file", or "rbd"
+            storage_config: Optional storage configuration override
+            host_config: KVM host configuration
+
+        Returns:
+            Dictionary with restore results
+
+        Related: Issue #15 - Implement Changed Block Tracking (CBT)
+        """
+        import tempfile
+
+        log_fn = self._log
+        log_fn("INFO", f"Starting chain restore with {len(chain_backup_dirs)} backups", {
+            "operation": "chain_restore_start",
+            "chain_length": len(chain_backup_dirs),
+            "new_name": new_name
+        })
+
+        if not chain_backup_dirs:
+            raise ValueError("No backup directories provided for restore")
+
+        # Get VM info from the first (full) backup
+        full_backup_dir = chain_backup_dirs[0]
+        info_file = full_backup_dir / "vm_info.json"
+
+        if not info_file.exists():
+            raise FileNotFoundError("vm_info.json not found in full backup")
+
+        with open(info_file, 'r') as f:
+            vm_info = json.load(f)
+
+        # Get disk targets to merge
+        disk_targets = [d.get("target") for d in vm_info.get("disks", [{"target": "vda"}])]
+        if not disk_targets:
+            disk_targets = ["vda"]
+
+        # Create temp directory for merged images
+        with tempfile.TemporaryDirectory() as temp_dir:
+            merged_dir = Path(temp_dir) / "merged"
+            merged_dir.mkdir()
+
+            # Merge each disk
+            for disk_target in disk_targets:
+                try:
+                    merge_result = await self.merge_incremental_chain(
+                        chain_dirs=chain_backup_dirs,
+                        output_dir=merged_dir,
+                        disk_target=disk_target
+                    )
+                    log_fn("INFO", f"Merged disk {disk_target}", {
+                        "size": merge_result.get("merged_size")
+                    })
+                except FileNotFoundError:
+                    log_fn("WARNING", f"Disk {disk_target} not found in chain, skipping")
+                    continue
+
+            # Copy domain.xml from the most recent backup (last in chain)
+            # as it may have more recent configuration
+            latest_backup_dir = chain_backup_dirs[-1]
+            domain_xml_src = latest_backup_dir / "domain.xml"
+            if not domain_xml_src.exists():
+                domain_xml_src = full_backup_dir / "domain.xml"
+
+            if domain_xml_src.exists():
+                import shutil
+                shutil.copy2(domain_xml_src, merged_dir / "domain.xml")
+
+            # Copy vm_info.json
+            import shutil
+            shutil.copy2(info_file, merged_dir / "vm_info.json")
+
+            # Now restore from the merged directory using the standard restore method
+            restore_result = await self.restore_vm(
+                uri=uri,
+                backup_dir=merged_dir,
+                new_name=new_name,
+                overwrite=overwrite,
+                storage_type=storage_type,
+                storage_config=storage_config,
+                host_config=host_config
+            )
+
+            log_fn("INFO", f"Chain restore completed", {
+                "operation": "chain_restore_complete",
+                "vm_name": restore_result.get("vm_name"),
+                "chain_length": len(chain_backup_dirs)
+            })
+
+            return {
+                **restore_result,
+                "chain_restore": True,
+                "chain_length": len(chain_backup_dirs)
+            }
 
     def close_connections(self):
         """Close all libvirt connections."""

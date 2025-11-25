@@ -26,6 +26,22 @@ class ScheduleCreate(BaseModel):
     cron_expression: str
     retention_config: dict
     storage_backend_id: int
+    # Incremental backup configuration (Issue #15)
+    backup_mode_policy: str = "auto"  # auto, full_only, incremental_preferred
+    max_chain_length: int = 14
+    full_backup_day: Optional[int] = None  # 0-6 for weekly, 1-31 for monthly
+
+
+class ScheduleUpdate(BaseModel):
+    """Request model for updating schedule configuration."""
+    name: Optional[str] = None
+    cron_expression: Optional[str] = None
+    retention_config: Optional[dict] = None
+    enabled: Optional[bool] = None
+    # Incremental backup configuration (Issue #15)
+    backup_mode_policy: Optional[str] = None
+    max_chain_length: Optional[int] = None
+    full_backup_day: Optional[int] = None
 
 
 class ScheduleResponse(BaseModel):
@@ -39,6 +55,14 @@ class ScheduleResponse(BaseModel):
     enabled: bool
     last_run: Optional[datetime]
     next_run: Optional[datetime]
+    # Incremental backup configuration (Issue #15)
+    backup_mode_policy: str = "auto"
+    max_chain_length: int = 14
+    full_backup_day: Optional[int] = None
+    last_full_backup_id: Optional[int] = None
+    checkpoint_name: Optional[str] = None
+    incremental_capable: Optional[bool] = None
+    capability_checked_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -81,7 +105,11 @@ async def create_schedule(
         retention_config=schedule_data.retention_config,
         storage_backend_id=schedule_data.storage_backend_id,
         enabled=True,
-        next_run=next_run
+        next_run=next_run,
+        # Incremental backup configuration (Issue #15)
+        backup_mode_policy=schedule_data.backup_mode_policy,
+        max_chain_length=schedule_data.max_chain_length,
+        full_backup_day=schedule_data.full_backup_day
     )
 
     db.add(schedule)
@@ -133,6 +161,111 @@ async def run_schedule_now(
     }
 
 
+@router.get("/{schedule_id}", response_model=ScheduleResponse)
+async def get_schedule(
+    schedule_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get a backup schedule by ID."""
+    schedule = await db.get(BackupSchedule, schedule_id)
+    if not schedule:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Schedule not found"
+        )
+    return schedule
+
+
+@router.patch("/{schedule_id}", response_model=ScheduleResponse)
+async def update_schedule(
+    schedule_id: int,
+    update_data: ScheduleUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """
+    Update a backup schedule.
+
+    Allows updating:
+    - name
+    - cron_expression
+    - retention_config
+    - enabled
+    - backup_mode_policy (auto, full_only, incremental_preferred)
+    - max_chain_length
+    - full_backup_day
+
+    Related: Issue #15 - Implement Changed Block Tracking (CBT)
+    """
+    schedule = await db.get(BackupSchedule, schedule_id)
+    if not schedule:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Schedule not found"
+        )
+
+    # Update fields that were provided
+    if update_data.name is not None:
+        schedule.name = update_data.name
+
+    if update_data.cron_expression is not None:
+        # Validate cron expression
+        try:
+            cron = croniter(update_data.cron_expression, datetime.utcnow())
+            schedule.cron_expression = update_data.cron_expression
+            schedule.next_run = cron.get_next(datetime)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid cron expression: {str(e)}"
+            )
+
+    if update_data.retention_config is not None:
+        schedule.retention_config = update_data.retention_config
+
+    if update_data.enabled is not None:
+        schedule.enabled = update_data.enabled
+
+    # Incremental backup configuration (Issue #15)
+    if update_data.backup_mode_policy is not None:
+        if update_data.backup_mode_policy not in ["auto", "full_only", "incremental_preferred"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="backup_mode_policy must be one of: auto, full_only, incremental_preferred"
+            )
+        schedule.backup_mode_policy = update_data.backup_mode_policy
+
+    if update_data.max_chain_length is not None:
+        if update_data.max_chain_length < 1 or update_data.max_chain_length > 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="max_chain_length must be between 1 and 100"
+            )
+        schedule.max_chain_length = update_data.max_chain_length
+
+    if update_data.full_backup_day is not None:
+        # Validate based on schedule type
+        if schedule.schedule_type == ScheduleType.WEEKLY:
+            if update_data.full_backup_day < 0 or update_data.full_backup_day > 6:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="full_backup_day must be 0-6 for weekly schedules"
+                )
+        elif schedule.schedule_type == ScheduleType.MONTHLY:
+            if update_data.full_backup_day < 1 or update_data.full_backup_day > 31:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="full_backup_day must be 1-31 for monthly schedules"
+                )
+        schedule.full_backup_day = update_data.full_backup_day
+
+    await db.commit()
+    await db.refresh(schedule)
+
+    return schedule
+
+
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_schedule(
     schedule_id: int,
@@ -151,3 +284,79 @@ async def delete_schedule(
     await db.commit()
 
     return None
+
+
+@router.post("/{schedule_id}/check-incremental-support")
+async def check_incremental_support(
+    schedule_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """
+    Check if the VM associated with this schedule supports incremental backups.
+
+    This queries the hypervisor to verify:
+    - libvirt version (requires 6.0+)
+    - QEMU version (requires 4.2+)
+    - Disk types and their support for checkpoints
+    - Recommended backup method
+
+    The result is cached on the schedule for future reference.
+
+    Related: Issue #15 - Implement Changed Block Tracking (CBT)
+    """
+    schedule = await db.get(BackupSchedule, schedule_id)
+    if not schedule:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Schedule not found"
+        )
+
+    if schedule.source_type != SourceType.VM:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Incremental backup support check only applicable for VMs"
+        )
+
+    # Get the VM and its KVM host
+    from backend.models.infrastructure import VM, KVMHost
+    vm = await db.get(VM, schedule.source_id)
+    if not vm:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Associated VM not found"
+        )
+
+    kvm_host = await db.get(KVMHost, vm.host_id)
+    if not kvm_host:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Associated KVM host not found"
+        )
+
+    # Check incremental support
+    from backend.services.kvm.backup import KVMBackupService
+    kvm_service = KVMBackupService()
+
+    try:
+        support = await kvm_service.check_incremental_support(
+            uri=kvm_host.uri,
+            vm_uuid=vm.uuid
+        )
+
+        # Update schedule with cached result
+        schedule.incremental_capable = support["supported"]
+        schedule.capability_checked_at = datetime.utcnow()
+        await db.commit()
+
+        return {
+            "schedule_id": schedule_id,
+            "vm_name": vm.name,
+            **support
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to check incremental support: {str(e)}"
+        )

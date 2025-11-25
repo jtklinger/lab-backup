@@ -763,3 +763,132 @@ async def check_backup_deletion(
         "can_delete": can_delete,
         "reason": reason
     }
+
+
+@router.get("/{backup_id}/restoration-plan")
+async def get_restoration_plan(
+    backup_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get the restoration plan for a backup.
+
+    For incremental backups, this returns the full chain of backups
+    needed to restore to this point, including:
+    - All required backup files in order
+    - Total download size
+    - Estimated restore time
+    - Step-by-step restoration instructions
+
+    Related: Issue #15 - Implement Changed Block Tracking (CBT)
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    plan = await chain_service.get_restoration_plan(backup_id)
+
+    if not plan.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=plan.get("error", "Backup not found")
+        )
+
+    return plan
+
+
+@router.get("/chains/{chain_id}/verify")
+async def verify_chain_integrity(
+    chain_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Verify the integrity of a backup chain.
+
+    Checks:
+    - All backups in chain exist
+    - Sequence numbers are contiguous
+    - Parent references are valid
+    - No orphaned backups
+    - Chain is restorable
+
+    Related: Issue #15 - Implement Changed Block Tracking (CBT)
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    result = await chain_service.verify_chain_integrity(chain_id)
+
+    if not result.get("valid") and "error" in result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=result["error"]
+        )
+
+    return result
+
+
+@router.get("/chains/needing-consolidation")
+async def get_chains_needing_consolidation(
+    max_chain_length: int = 14,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """
+    Find chains that exceed the maximum recommended length.
+
+    Returns chains that should be consolidated to:
+    - Reduce chain length for faster restores
+    - Free up storage space
+    - Improve backup reliability
+
+    Default threshold is 14 incrementals per chain.
+
+    Related: Issue #15 - Implement Changed Block Tracking (CBT)
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    chains = await chain_service.get_chains_needing_consolidation(max_chain_length)
+
+    return {
+        "max_chain_length_threshold": max_chain_length,
+        "chains_needing_consolidation": len(chains),
+        "chains": chains
+    }
+
+
+@router.post("/chains/{chain_id}/consolidate", status_code=status.HTTP_202_ACCEPTED)
+async def consolidate_chain(
+    chain_id: str,
+    target_backup_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN))
+):
+    """
+    Consolidate incremental backups into a single full backup.
+
+    This creates a new full backup by merging all incrementals in the chain.
+    The operation runs as a background job due to potentially large data sizes.
+
+    Args:
+        chain_id: Chain UUID to consolidate
+        target_backup_id: Optional - only consolidate up to this backup
+
+    Admin-only operation.
+
+    Related: Issue #15 - Implement Changed Block Tracking (CBT)
+    """
+    from backend.services.backup_chain import BackupChainService
+
+    chain_service = BackupChainService(db)
+    result = await chain_service.consolidate_chain(chain_id, target_backup_id)
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result.get("error", "Consolidation failed")
+        )
+
+    return result

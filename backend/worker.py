@@ -370,29 +370,88 @@ async def _backup_vm(db, schedule, backup, job):
         # Setup authentication for KVM host if using password auth
         await kvm_service.setup_auth_for_host(db, kvm_host.id)
 
-        # Determine if incremental backup is requested
+        # Determine backup mode (full vs incremental) - Issue #15
         from backend.models.backup import BackupMode
-        is_incremental = hasattr(backup, 'backup_mode') and backup.backup_mode == BackupMode.INCREMENTAL
+
+        # Get schedule's incremental configuration if this is a scheduled backup
+        backup_mode_policy = "auto"
+        max_chain_length = 14
+        parent_checkpoint = None
+        is_incremental = False
+
+        if schedule:
+            backup_mode_policy = getattr(schedule, 'backup_mode_policy', 'auto')
+            max_chain_length = getattr(schedule, 'max_chain_length', 14)
+            parent_checkpoint = getattr(schedule, 'checkpoint_name', None)
+
+        # Determine current chain length
+        chain_length = 0
+        if schedule and schedule.last_full_backup_id:
+            # Count incrementals since last full
+            from sqlalchemy import func, and_
+            chain_count_stmt = select(func.count(Backup.id)).where(
+                and_(
+                    Backup.schedule_id == schedule.id,
+                    Backup.id > schedule.last_full_backup_id,
+                    Backup.backup_mode == BackupMode.INCREMENTAL
+                )
+            )
+            result = await db.execute(chain_count_stmt)
+            chain_length = result.scalar() or 0
+
+        # Determine whether to use incremental backup
+        mode_decision = await kvm_service.determine_backup_mode(
+            uri=kvm_host.uri,
+            vm_uuid=vm.uuid,
+            schedule_policy=backup_mode_policy,
+            chain_length=chain_length,
+            max_chain_length=max_chain_length,
+            force_full=backup.backup_mode == BackupMode.FULL if hasattr(backup, 'backup_mode') else False
+        )
+
+        is_incremental = mode_decision["mode"] == "incremental"
+        incremental_method = mode_decision.get("incremental_method")
+
+        log = JobLog(
+            job_id=job.id,
+            level="INFO",
+            message=f"Backup mode decision: {mode_decision['mode']} ({mode_decision['reason']})"
+        )
+        db.add(log)
+        await db.commit()
 
         # Check if CBT (Changed Block Tracking) should be used (Issue #15)
         use_cbt = False
-        if is_incremental and vm.cbt_enabled and vm.cbt_capable:
-            use_cbt = True
-            log = JobLog(
-                job_id=job.id,
-                level="INFO",
-                message=f"Using Changed Block Tracking (CBT) for incremental backup"
-            )
-            db.add(log)
-            await db.commit()
-        elif is_incremental and not vm.cbt_enabled:
-            log = JobLog(
-                job_id=job.id,
-                level="INFO",
-                message="CBT not enabled for this VM, using traditional incremental backup"
-            )
-            db.add(log)
-            await db.commit()
+        use_checkpoint_api = False
+
+        if is_incremental:
+            if incremental_method == "checkpoint":
+                use_checkpoint_api = True
+                use_cbt = True
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Using libvirt checkpoint API for incremental backup (parent: {parent_checkpoint or 'new chain'})"
+                )
+                db.add(log)
+                await db.commit()
+            elif vm.cbt_enabled and vm.cbt_capable:
+                use_cbt = True
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Using Changed Block Tracking (CBT) for incremental backup"
+                )
+                db.add(log)
+                await db.commit()
+            else:
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message="Using QCOW2 backing file method for incremental backup"
+                )
+                db.add(log)
+                await db.commit()
 
         # Get excluded_disks from backup metadata if provided
         excluded_disks = backup.backup_metadata.get('excluded_disks', []) if backup.backup_metadata else []
@@ -404,46 +463,65 @@ async def _backup_vm(db, schedule, backup, job):
             from backend.core.config import settings
             ssh_password = decrypt_password(kvm_host.password_encrypted, settings.SECRET_KEY)
 
-        # Attempt backup with CBT if requested, with fallback (Issue #15)
+        # Attempt backup with checkpoint API or CBT if requested, with fallback (Issue #15)
         backup_result = None
         cbt_fallback = False
+        new_checkpoint_name = None
 
         try:
-            # TODO: Pass excluded_disks to create_backup() once disk exclusion is implemented in KVMBackupService
-            # For now, excluded_disks are stored in metadata but not enforced during backup
-            backup_result = await kvm_service.create_backup(
-                uri=kvm_host.uri,
-                vm_uuid=vm.uuid,
-                backup_dir=backup_dir,
-                incremental=is_incremental,
-                use_cbt=use_cbt,
-                ssh_password=ssh_password
-                # excluded_disks=excluded_disks  # TODO: Add this parameter to create_backup()
-            )
-        except Exception as e:
-            if use_cbt:
-                # CBT backup failed, fall back to traditional backup
-                logger.warning(f"CBT backup failed: {e}. Falling back to traditional incremental backup.")
-                log = JobLog(
-                    job_id=job.id,
-                    level="WARNING",
-                    message=f"CBT backup failed ({str(e)}), falling back to traditional backup"
-                )
-                db.add(log)
-                await db.commit()
+            if use_checkpoint_api:
+                # Use the new checkpoint-based incremental backup
+                import uuid as uuid_module
+                new_checkpoint_name = f"backup-{vm.name}-{uuid_module.uuid4().hex[:8]}"
 
-                cbt_fallback = True
-                # Retry with traditional backup
+                backup_result = await kvm_service.create_incremental_backup(
+                    uri=kvm_host.uri,
+                    vm_uuid=vm.uuid,
+                    backup_dir=backup_dir,
+                    parent_checkpoint=parent_checkpoint,
+                    new_checkpoint_name=new_checkpoint_name,
+                    ssh_password=ssh_password
+                )
+            else:
+                # Use traditional backup method
+                # TODO: Pass excluded_disks to create_backup() once disk exclusion is implemented in KVMBackupService
+                # For now, excluded_disks are stored in metadata but not enforced during backup
                 backup_result = await kvm_service.create_backup(
                     uri=kvm_host.uri,
                     vm_uuid=vm.uuid,
                     backup_dir=backup_dir,
                     incremental=is_incremental,
+                    use_cbt=use_cbt,
+                    ssh_password=ssh_password
+                    # excluded_disks=excluded_disks  # TODO: Add this parameter to create_backup()
+                )
+        except Exception as e:
+            if use_checkpoint_api or use_cbt:
+                # Checkpoint/CBT backup failed, fall back to full backup
+                logger.warning(f"Incremental backup failed: {e}. Falling back to full backup.")
+                log = JobLog(
+                    job_id=job.id,
+                    level="WARNING",
+                    message=f"Incremental backup failed ({str(e)}), falling back to full backup"
+                )
+                db.add(log)
+                await db.commit()
+
+                cbt_fallback = True
+                new_checkpoint_name = None  # Don't create checkpoint on fallback
+                # Retry with full backup
+                backup_result = await kvm_service.create_backup(
+                    uri=kvm_host.uri,
+                    vm_uuid=vm.uuid,
+                    backup_dir=backup_dir,
+                    incremental=False,
                     use_cbt=False,
                     ssh_password=ssh_password
                 )
+                # Update backup mode to FULL since we fell back
+                backup.backup_mode = BackupMode.FULL
             else:
-                # Not a CBT backup, re-raise error
+                # Not an incremental backup, re-raise error
                 raise
 
         # Persist any pending verbose logs from KVM service
@@ -465,10 +543,32 @@ async def _backup_vm(db, schedule, backup, job):
             cbt_meta = backup_result['cbt_metadata']
             backup.cbt_enabled = True
             backup.changed_blocks_count = cbt_meta.get('changed_blocks_count', 0)
-            backup.bitmap_name = cbt_meta.get('bitmap_name')
+            backup.bitmap_name = cbt_meta.get('bitmap_name') or cbt_meta.get('checkpoint_name')
             backup.block_size = cbt_meta.get('block_size')
+
+            # Update schedule with checkpoint info for next incremental backup
+            if schedule and new_checkpoint_name and not cbt_fallback:
+                schedule.checkpoint_name = new_checkpoint_name
+                # If this is a full backup (first in chain), update last_full_backup_id
+                if not is_incremental or backup.backup_mode == BackupMode.FULL:
+                    schedule.last_full_backup_id = backup.id
+                # Cache incremental capability
+                schedule.incremental_capable = True
+                schedule.capability_checked_at = datetime.utcnow()
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Updated schedule with checkpoint: {new_checkpoint_name}"
+                )
+                db.add(log)
         else:
             backup.cbt_enabled = False
+
+            # If this is a full backup without checkpoint (fallback or traditional),
+            # reset the schedule's chain tracking
+            if schedule and not is_incremental:
+                schedule.last_full_backup_id = backup.id
+                schedule.checkpoint_name = None  # Clear checkpoint for fresh chain
 
         # Update backup with application consistency metadata (Issue #14)
         backup.application_consistent = backup_result.get('application_consistent', False)

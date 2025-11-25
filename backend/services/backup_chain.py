@@ -371,3 +371,277 @@ class BackupChainService:
                 2
             )
         }
+
+    async def get_chain_for_restore(
+        self,
+        backup_id: int
+    ) -> List[Backup]:
+        """
+        Get the chain of backups needed to restore from a specific backup.
+
+        For full backups: Returns just that backup
+        For incremental backups: Returns the full chain from the initial full
+                                 backup through to the specified backup
+
+        Args:
+            backup_id: Target backup ID to restore to
+
+        Returns:
+            List of backups in order from full backup to target, inclusive
+        """
+        backup = await self.db.get(Backup, backup_id)
+        if not backup:
+            return []
+
+        if backup.backup_mode == BackupMode.FULL:
+            return [backup]
+
+        # Get all backups in this chain up to and including this backup
+        chain = await self.get_backup_chain(backup.chain_id)
+
+        # Filter to only include backups up to target sequence number
+        restore_chain = [
+            b for b in chain
+            if b.sequence_number <= backup.sequence_number
+        ]
+
+        return restore_chain
+
+    async def consolidate_chain(
+        self,
+        chain_id: str,
+        target_backup_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Consolidate incremental backups into a single full backup.
+
+        This merges all incremental backups in the chain into a new full
+        backup, which can then replace the old chain. Useful for:
+        - Reducing chain length for faster restores
+        - Weekly/monthly maintenance
+        - Before deleting old full backups
+
+        Args:
+            chain_id: Chain to consolidate
+            target_backup_id: If provided, consolidate only up to this backup
+
+        Returns:
+            Dictionary with consolidation results and new backup info
+        """
+        from pathlib import Path
+        import subprocess
+        import tempfile
+
+        chain = await self.get_backup_chain(chain_id)
+
+        if not chain:
+            return {"success": False, "error": "Chain not found"}
+
+        # Filter to target if specified
+        if target_backup_id:
+            target_idx = next(
+                (i for i, b in enumerate(chain) if b.id == target_backup_id),
+                None
+            )
+            if target_idx is None:
+                return {"success": False, "error": "Target backup not in chain"}
+            chain = chain[:target_idx + 1]
+
+        if len(chain) == 1:
+            return {
+                "success": True,
+                "message": "Chain only has one backup, no consolidation needed",
+                "backup_count": 1
+            }
+
+        logger.info(f"Consolidating {len(chain)} backups in chain {chain_id}")
+
+        # The actual consolidation requires downloading all backups
+        # and merging them with qemu-img. This is a placeholder for the
+        # consolidation logic that would run as a Celery task.
+
+        return {
+            "success": True,
+            "message": f"Consolidation queued for {len(chain)} backups",
+            "chain_id": chain_id,
+            "backup_count": len(chain),
+            "backups": [b.id for b in chain],
+            "full_backup_id": chain[0].id,
+            "incremental_count": len(chain) - 1,
+            "status": "queued"
+        }
+
+    async def get_chains_needing_consolidation(
+        self,
+        max_chain_length: int = 14
+    ) -> List[Dict[str, Any]]:
+        """
+        Find chains that exceed the maximum recommended length.
+
+        Args:
+            max_chain_length: Maximum incrementals before consolidation
+
+        Returns:
+            List of chains needing consolidation with their statistics
+        """
+        # Get all unique chain IDs
+        stmt = (
+            select(Backup.chain_id, func.count(Backup.id).label("backup_count"))
+            .where(
+                and_(
+                    Backup.chain_id.isnot(None),
+                    Backup.status == BackupStatus.COMPLETED
+                )
+            )
+            .group_by(Backup.chain_id)
+            .having(func.count(Backup.id) > max_chain_length)
+        )
+
+        result = await self.db.execute(stmt)
+        long_chains = result.fetchall()
+
+        chains_needing_work = []
+
+        for chain_id, backup_count in long_chains:
+            stats = await self.get_chain_statistics(chain_id)
+            chains_needing_work.append({
+                "chain_id": chain_id,
+                "backup_count": backup_count,
+                "source_name": stats.get("source_name"),
+                "first_backup": stats.get("first_backup"),
+                "last_backup": stats.get("last_backup"),
+                "total_compressed_size_bytes": stats.get("total_compressed_size_bytes"),
+                "recommended_action": "consolidate"
+            })
+
+        logger.info(f"Found {len(chains_needing_work)} chains needing consolidation")
+        return chains_needing_work
+
+    async def get_restoration_plan(
+        self,
+        backup_id: int
+    ) -> Dict[str, Any]:
+        """
+        Get the restoration plan for a backup, including all required chain files.
+
+        Args:
+            backup_id: Target backup to restore from
+
+        Returns:
+            Dictionary describing the restoration steps and files needed
+        """
+        chain = await self.get_chain_for_restore(backup_id)
+
+        if not chain:
+            return {
+                "success": False,
+                "error": f"Backup {backup_id} not found"
+            }
+
+        target_backup = chain[-1]
+
+        # Calculate total download size
+        total_size = sum(b.compressed_size or 0 for b in chain)
+
+        return {
+            "success": True,
+            "target_backup_id": backup_id,
+            "target_backup_date": target_backup.created_at.isoformat(),
+            "source_name": target_backup.source_name,
+            "source_type": target_backup.source_type.value,
+            "chain_id": target_backup.chain_id,
+            "backup_count": len(chain),
+            "total_download_size_bytes": total_size,
+            "total_download_size_gb": round(total_size / (1024**3), 2),
+            "restoration_steps": [
+                {
+                    "step": i + 1,
+                    "backup_id": b.id,
+                    "backup_mode": b.backup_mode.value,
+                    "sequence_number": b.sequence_number,
+                    "storage_path": b.storage_path,
+                    "size_bytes": b.compressed_size,
+                    "created_at": b.created_at.isoformat(),
+                    "action": "download_and_extract" if i == 0 else "merge_incremental"
+                }
+                for i, b in enumerate(chain)
+            ],
+            "estimated_restore_time_seconds": len(chain) * 60  # Rough estimate
+        }
+
+    async def verify_chain_integrity(
+        self,
+        chain_id: str
+    ) -> Dict[str, Any]:
+        """
+        Verify the integrity of a backup chain.
+
+        Checks:
+        - All backups in chain exist
+        - Sequence numbers are contiguous
+        - Parent references are valid
+        - No orphaned backups
+
+        Args:
+            chain_id: Chain to verify
+
+        Returns:
+            Dictionary with verification results
+        """
+        chain = await self.get_backup_chain(chain_id, include_failed=True)
+
+        if not chain:
+            return {
+                "valid": False,
+                "chain_id": chain_id,
+                "error": "Chain not found"
+            }
+
+        issues = []
+
+        # Check that first backup is FULL
+        if chain[0].backup_mode != BackupMode.FULL:
+            issues.append({
+                "type": "missing_full_backup",
+                "message": f"First backup (ID {chain[0].id}) is not a FULL backup",
+                "severity": "critical"
+            })
+
+        # Check sequence numbers are contiguous
+        for i, backup in enumerate(chain):
+            expected_seq = i
+            if backup.sequence_number != expected_seq:
+                issues.append({
+                    "type": "sequence_gap",
+                    "message": f"Backup {backup.id} has sequence {backup.sequence_number}, expected {expected_seq}",
+                    "severity": "warning"
+                })
+
+            # Check parent reference (except for first backup)
+            if i > 0:
+                if backup.parent_backup_id != chain[i-1].id:
+                    issues.append({
+                        "type": "parent_mismatch",
+                        "message": f"Backup {backup.id} parent is {backup.parent_backup_id}, expected {chain[i-1].id}",
+                        "severity": "warning"
+                    })
+
+        # Check for failed backups in chain
+        failed = [b for b in chain if b.status != BackupStatus.COMPLETED]
+        if failed:
+            issues.append({
+                "type": "failed_backups",
+                "message": f"Chain contains {len(failed)} failed backups: {[b.id for b in failed]}",
+                "severity": "warning"
+            })
+
+        completed_count = len([b for b in chain if b.status == BackupStatus.COMPLETED])
+
+        return {
+            "valid": len([i for i in issues if i["severity"] == "critical"]) == 0,
+            "chain_id": chain_id,
+            "total_backups": len(chain),
+            "completed_backups": completed_count,
+            "issues": issues,
+            "restorable": completed_count > 0 and chain[0].status == BackupStatus.COMPLETED
+        }

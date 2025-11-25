@@ -219,8 +219,83 @@ export interface Schedule {
   enabled: boolean;
   last_run?: string;
   next_run?: string;
+  // Incremental backup configuration (Issue #15)
+  backup_mode_policy: 'auto' | 'full_only' | 'incremental_preferred';
+  max_chain_length: number;
+  full_backup_day?: number;
+  last_full_backup_id?: number;
+  checkpoint_name?: string;
+  incremental_capable?: boolean;
+  capability_checked_at?: string;
   created_at: string;
   updated_at: string;
+}
+
+// Backup Chain Types (Issue #15)
+export interface BackupChain {
+  chain_id: string;
+  backup_count: number;
+  backups: Backup[];
+}
+
+export interface ChainStatistics {
+  chain_id: string;
+  source_type: string;
+  source_id: number;
+  source_name: string;
+  backup_count: number;
+  first_backup: string;
+  last_backup: string;
+  total_original_size_bytes: number;
+  total_compressed_size_bytes: number;
+  total_space_saved_bytes: number;
+  average_dedupe_ratio: number;
+  average_compression_ratio: number;
+  backups: {
+    id: number;
+    sequence: number;
+    mode: string;
+    created_at: string;
+    size?: number;
+    dedupe_ratio?: number;
+    compression_ratio?: number;
+  }[];
+}
+
+export interface RestorationPlan {
+  success: boolean;
+  target_backup_id: number;
+  target_backup_date: string;
+  source_name: string;
+  source_type: string;
+  chain_id: string;
+  backup_count: number;
+  total_download_size_bytes: number;
+  total_download_size_gb: number;
+  restoration_steps: {
+    step: number;
+    backup_id: number;
+    backup_mode: string;
+    sequence_number: number;
+    storage_path?: string;
+    size_bytes?: number;
+    created_at: string;
+    action: string;
+  }[];
+  estimated_restore_time_seconds: number;
+}
+
+export interface ChainIntegrity {
+  valid: boolean;
+  chain_id: string;
+  total_backups: number;
+  completed_backups: number;
+  issues: {
+    type: string;
+    message: string;
+    severity: 'critical' | 'warning';
+  }[];
+  restorable: boolean;
 }
 
 // Jobs

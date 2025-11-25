@@ -39,6 +39,9 @@ import {
   Delete as DeleteIcon,
   Lock as LockIcon,
   Gavel as LegalHoldIcon,
+  AccountTree as ChainIcon,
+  CloudSync as IncrementalIcon,
+  CloudDownload as FullIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import { useSnackbar } from 'notistack';
@@ -236,6 +239,7 @@ const Backups: React.FC = () => {
           <TableHead>
             <TableRow>
               <TableCell>Source</TableCell>
+              <TableCell>Type</TableCell>
               <TableCell>Storage Backend</TableCell>
               <TableCell>Size</TableCell>
               <TableCell>Status</TableCell>
@@ -248,13 +252,13 @@ const Backups: React.FC = () => {
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={8} align="center">
+                <TableCell colSpan={9} align="center">
                   <CircularProgress />
                 </TableCell>
               </TableRow>
             ) : backups.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} align="center">
+                <TableCell colSpan={9} align="center">
                   <Typography variant="body2" color="text.secondary">
                     No backups found
                   </Typography>
@@ -270,6 +274,33 @@ const Backups: React.FC = () => {
                     <Typography variant="caption" color="text.secondary">
                       {backup.source_type === 'vm' ? 'VM' : backup.source_type === 'container' ? 'Container' : (backup.vm_id ? 'VM' : 'Container')}
                     </Typography>
+                  </TableCell>
+                  <TableCell>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      {backup.backup_mode === 'incremental' ? (
+                        <Tooltip title="Incremental backup">
+                          <IncrementalIcon fontSize="small" color="info" />
+                        </Tooltip>
+                      ) : (
+                        <Tooltip title="Full backup">
+                          <FullIcon fontSize="small" color="primary" />
+                        </Tooltip>
+                      )}
+                      <Typography variant="body2">
+                        {backup.backup_mode === 'incremental' ? 'Incr' : 'Full'}
+                      </Typography>
+                      {backup.chain_id && backup.sequence_number !== undefined && backup.sequence_number > 0 && (
+                        <Tooltip title={`Chain sequence #${backup.sequence_number}`}>
+                          <Chip
+                            icon={<ChainIcon />}
+                            label={`#${backup.sequence_number}`}
+                            size="small"
+                            variant="outlined"
+                            sx={{ ml: 0.5 }}
+                          />
+                        </Tooltip>
+                      )}
+                    </Box>
                   </TableCell>
                   <TableCell>{backup.storage_backend_name}</TableCell>
                   <TableCell>{formatBytes(backup.size || 0)}</TableCell>
