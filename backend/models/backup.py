@@ -372,7 +372,10 @@ class Backup(Base):
     )
 
     # Relationships
-    schedule: Mapped[Optional["BackupSchedule"]] = relationship(back_populates="backups")
+    schedule: Mapped[Optional["BackupSchedule"]] = relationship(
+        back_populates="backups",
+        foreign_keys=[schedule_id]
+    )
     storage_backend: Mapped["StorageBackend"] = relationship(back_populates="backups")
     parent_backup: Mapped[Optional["Backup"]] = relationship(
         "Backup",

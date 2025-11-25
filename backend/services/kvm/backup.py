@@ -8,7 +8,7 @@ import tempfile
 import tarfile
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 import libvirt
 import xml.etree.ElementTree as ET
