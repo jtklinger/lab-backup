@@ -630,12 +630,31 @@ async def _backup_vm(db, schedule, backup, job):
         # Update progress phase to archiving
         progress_tracker.set_phase("archiving")
 
-        # Create archive
-        archive_file = Path(temp_dir) / f"{backup_dir.name}.tar.gz"
+        # Get user's compression preference, default to global setting
+        compression_algorithm = settings.BACKUP_COMPRESSION
+        if backup.backup_metadata:
+            user_compression = backup.backup_metadata.get("compression_algorithm")
+            if user_compression is not None:
+                # Handle "none" as no compression
+                if user_compression == "none" or user_compression == "":
+                    compression_algorithm = None
+                    log = JobLog(
+                        job_id=job.id,
+                        level="INFO",
+                        message="Compression disabled by user preference"
+                    )
+                    db.add(log)
+                    await db.commit()
+                else:
+                    compression_algorithm = user_compression
+
+        # Create archive with user's compression preference
+        archive_ext = ".tar" if compression_algorithm is None else f".tar.{compression_algorithm}" if compression_algorithm != "gz" else ".tar.gz"
+        archive_file = Path(temp_dir) / f"{backup_dir.name}{archive_ext}"
         archive_result = await kvm_service.create_backup_archive(
             backup_dir=backup_dir,
             output_file=archive_file,
-            compression=settings.BACKUP_COMPRESSION
+            compression=compression_algorithm
         )
 
         # Get storage backend for encryption strategy (Issue #11)
@@ -651,8 +670,22 @@ async def _backup_vm(db, schedule, backup, job):
         encryption_key_to_use = None
         encryption_key_id = None
 
-        if storage_backend_model.encryption_strategy == EncryptionStrategy.APP_LEVEL:
+        # Check user's explicit encryption preference (overrides all other settings)
+        user_encryption_enabled = backup.backup_metadata.get("encryption_enabled") if backup.backup_metadata else None
+
+        if user_encryption_enabled is False:
+            # User explicitly disabled encryption - respect their choice
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Encryption disabled by user preference"
+            )
+            db.add(log)
+            await db.commit()
+
+        elif storage_backend_model.encryption_strategy == EncryptionStrategy.APP_LEVEL or user_encryption_enabled is True:
             # Use storage-backend-specific encryption key (Issue #11)
+            # Also use this path if user explicitly enabled encryption
             from backend.services.key_management import KeyManagementService
             key_service = KeyManagementService(db)
 
@@ -668,6 +701,16 @@ async def _backup_vm(db, schedule, backup, job):
                     job_id=job.id,
                     level="INFO",
                     message=f"Using storage-backend-specific encryption key (key ID: {encryption_key_id})"
+                )
+                db.add(log)
+                await db.commit()
+            elif user_encryption_enabled is True and settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+                # User wants encryption but no storage-specific key - fall back to global
+                encryption_key_to_use = settings.ENCRYPTION_KEY
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message="Using global encryption key (user requested encryption)"
                 )
                 db.add(log)
                 await db.commit()
@@ -872,18 +915,123 @@ async def _backup_container(db, schedule, backup, job):
         db.add(log)
         await db.commit()
 
-        # Create archive
-        archive_file = Path(temp_dir) / f"{backup_dir.name}.tar.gz"
+        # Get user's compression preference, default to global setting
+        compression_algorithm = settings.BACKUP_COMPRESSION
+        if backup.backup_metadata:
+            user_compression = backup.backup_metadata.get("compression_algorithm")
+            if user_compression is not None:
+                # Handle "none" as no compression
+                if user_compression == "none" or user_compression == "":
+                    compression_algorithm = None
+                    log = JobLog(
+                        job_id=job.id,
+                        level="INFO",
+                        message="Compression disabled by user preference"
+                    )
+                    db.add(log)
+                    await db.commit()
+                else:
+                    compression_algorithm = user_compression
+
+        # Create archive with user's compression preference
+        archive_ext = ".tar" if compression_algorithm is None else f".tar.{compression_algorithm}" if compression_algorithm != "gz" else ".tar.gz"
+        archive_file = Path(temp_dir) / f"{backup_dir.name}{archive_ext}"
         archive_result = await podman_service.create_backup_archive(
             backup_dir=backup_dir,
             output_file=archive_file,
-            compression=settings.BACKUP_COMPRESSION
+            compression=compression_algorithm
         )
 
-        # Encrypt backup if enabled
+        # Get storage backend for encryption strategy
+        from backend.models.storage import StorageBackend as StorageBackendModel, EncryptionStrategy
+        storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
+
+        if not storage_backend_model:
+            raise Exception("Storage backend not found")
+
+        # Determine encryption strategy and key
         file_to_upload = archive_file
         encrypted = False
-        if settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+        encryption_key_to_use = None
+        encryption_key_id = None
+
+        # Check user's explicit encryption preference (overrides all other settings)
+        user_encryption_enabled = backup.backup_metadata.get("encryption_enabled") if backup.backup_metadata else None
+
+        if user_encryption_enabled is False:
+            # User explicitly disabled encryption - respect their choice
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Encryption disabled by user preference"
+            )
+            db.add(log)
+            await db.commit()
+
+        elif storage_backend_model.encryption_strategy == EncryptionStrategy.APP_LEVEL or user_encryption_enabled is True:
+            # Use storage-backend-specific encryption key
+            from backend.services.key_management import KeyManagementService
+            key_service = KeyManagementService(db)
+
+            encryption_key_bytes = await key_service.get_storage_backend_key(
+                storage_backend_model.id,
+                create_if_missing=True
+            )
+
+            if encryption_key_bytes:
+                encryption_key_to_use = encryption_key_bytes.decode('utf-8')
+                encryption_key_id = storage_backend_model.encryption_key_id
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message=f"Using storage-backend-specific encryption key (key ID: {encryption_key_id})"
+                )
+                db.add(log)
+                await db.commit()
+            elif user_encryption_enabled is True and settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+                # User wants encryption but no storage-specific key - fall back to global
+                encryption_key_to_use = settings.ENCRYPTION_KEY
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message="Using global encryption key (user requested encryption)"
+                )
+                db.add(log)
+                await db.commit()
+
+        elif storage_backend_model.encryption_strategy == EncryptionStrategy.GLOBAL:
+            # Use global encryption key (backward compatibility)
+            if settings.BACKUP_ENCRYPTION_ENABLED and settings.ENCRYPTION_KEY:
+                encryption_key_to_use = settings.ENCRYPTION_KEY
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message="Using global encryption key"
+                )
+                db.add(log)
+                await db.commit()
+
+        elif storage_backend_model.encryption_strategy == EncryptionStrategy.STORAGE_NATIVE:
+            # Cloud-native encryption (S3 SSE, etc.) - handled by storage backend
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Using storage-native encryption (no app-level encryption)"
+            )
+            db.add(log)
+            await db.commit()
+
+        else:  # DISABLED
+            log = JobLog(
+                job_id=job.id,
+                level="INFO",
+                message="Encryption disabled for this storage backend"
+            )
+            db.add(log)
+            await db.commit()
+
+        # Encrypt backup if we have a key
+        if encryption_key_to_use:
             log = JobLog(
                 job_id=job.id,
                 level="INFO",
@@ -899,13 +1047,17 @@ async def _backup_container(db, schedule, backup, job):
                 lambda: encrypt_backup(
                     archive_file,
                     encrypted_file,
-                    settings.ENCRYPTION_KEY,
+                    encryption_key_to_use,
                     use_chunked=True  # Use chunked for large files
                 )
             )
 
             file_to_upload = encrypted_file
             encrypted = True
+
+            # Store encryption key ID in backup record
+            if encryption_key_id:
+                backup.encryption_key_id = encryption_key_id
 
             log = JobLog(
                 job_id=job.id,
@@ -916,12 +1068,6 @@ async def _backup_container(db, schedule, backup, job):
             await db.commit()
 
         # Upload to storage
-        from backend.models.storage import StorageBackend as StorageBackendModel
-        storage_backend_model = await db.get(StorageBackendModel, backup.storage_backend_id)
-
-        if not storage_backend_model:
-            raise Exception("Storage backend not found")
-
         storage = create_storage_backend(
             storage_backend_model.type,
             storage_backend_model.config

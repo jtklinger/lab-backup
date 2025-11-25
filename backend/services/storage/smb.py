@@ -393,24 +393,56 @@ class SMBStorage(StorageBackend):
             return False
 
     async def _ensure_directory(self, path: str):
-        """Ensure a directory exists, creating it if necessary."""
+        """
+        Ensure a directory exists, creating parent directories as needed.
+
+        This is similar to os.makedirs() but for SMB paths.
+        """
         try:
-            def _mkdir():
-                try:
-                    # Check if directory already exists
-                    if smb_exists(path):
-                        return
+            def _makedirs():
+                # Check if directory already exists
+                if smb_exists(path):
+                    return
 
-                    # Try to create the directory (makedirs functionality)
-                    mkdir(path)
-                except Exception as e:
-                    # Directory might already exist or we might not have permission to check
-                    # Just log and continue - the file write will fail if directory truly doesn't exist
-                    self.logger.debug(f"Directory check/creation for {path}: {e}")
-                    pass
+                # Parse the UNC path to get components
+                # Path format: \\server\share\dir1\dir2\...
+                if not path.startswith('\\\\'):
+                    raise StorageError(f"Invalid SMB path format: {path}")
 
-            await asyncio.get_event_loop().run_in_executor(None, _mkdir)
+                # Split path into components
+                parts = path.split('\\')
+                # parts[0] = '', parts[1] = '', parts[2] = server, parts[3] = share, rest are dirs
+                if len(parts) < 4:
+                    raise StorageError(f"Invalid SMB path - missing server/share: {path}")
 
+                server = parts[2]
+                share = parts[3]
+                dirs = parts[4:]  # Directory components to create
+
+                # Build the base path (\\server\share)
+                base = f"\\\\{server}\\{share}"
+
+                # Create each directory level as needed
+                current_path = base
+                for dir_part in dirs:
+                    if not dir_part:  # Skip empty parts
+                        continue
+                    current_path = f"{current_path}\\{dir_part}"
+                    if not smb_exists(current_path):
+                        try:
+                            mkdir(current_path)
+                            self.logger.debug(f"Created SMB directory: {current_path}")
+                        except Exception as dir_error:
+                            # Check if it was created by another process
+                            if smb_exists(current_path):
+                                continue
+                            raise StorageError(f"Failed to create directory {current_path}: {dir_error}")
+
+            await asyncio.get_event_loop().run_in_executor(None, _makedirs)
+            self.logger.debug(f"Ensured SMB directory exists: {path}")
+
+        except StorageError:
+            raise
         except Exception as e:
-            # Don't raise - let the actual file operation fail if needed
-            self.logger.warning(f"Could not ensure SMB directory exists: {e}")
+            self.logger.error(f"Failed to create SMB directory {path}: {e}")
+            raise StorageError(f"Failed to create directory on SMB share: {e}")
