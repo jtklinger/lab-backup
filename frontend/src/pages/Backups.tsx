@@ -266,7 +266,16 @@ const Backups: React.FC = () => {
               </TableRow>
             ) : (
               backups.map((backup) => (
-                <TableRow key={backup.id} hover>
+                <TableRow
+                  key={backup.id}
+                  hover
+                  sx={{ cursor: backup.job_id ? 'pointer' : 'default' }}
+                  onClick={() => {
+                    if (backup.job_id) {
+                      navigate('/jobs', { state: { openJobId: backup.job_id } });
+                    }
+                  }}
+                >
                   <TableCell>
                     <Typography variant="body2">
                       {backup.source_name || backup.vm_name || backup.container_name || 'Unknown'}
@@ -337,7 +346,7 @@ const Backups: React.FC = () => {
                       )}
                     </Box>
                   </TableCell>
-                  <TableCell align="right">
+                  <TableCell align="right" onClick={(e) => e.stopPropagation()}>
                     <Tooltip title="Restore">
                       <IconButton
                         size="small"

@@ -154,6 +154,8 @@ export interface Backup {
   started_at?: string;
   completed_at?: string;
   expires_at?: string;
+  // Job tracking - link to job logs/progress
+  job_id?: number;
   // Verification fields
   verified: boolean;
   verification_date?: string;

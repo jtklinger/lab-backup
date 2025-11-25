@@ -398,6 +398,11 @@ class Backup(Base):
         viewonly=True
     )
 
+    @property
+    def job_id(self) -> Optional[int]:
+        """Get the associated job ID for this backup."""
+        return self.job.id if self.job else None
+
 
 class JobType(str, enum.Enum):
     """Job types."""

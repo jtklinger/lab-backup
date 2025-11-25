@@ -5,6 +5,7 @@
  * Three tabs: Active Jobs, Job History, System Logs
  */
 import React, { useState, useEffect, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   Box,
   Typography,
@@ -90,10 +91,30 @@ const levelColors: Record<string, string> = {
 };
 
 const JobsLogs: React.FC = () => {
+  const location = useLocation();
   const [tabValue, setTabValue] = useState(0);
+  const [initialJobId, setInitialJobId] = useState<number | null>(null);
+
+  // Check for navigation state to auto-open a job
+  useEffect(() => {
+    const state = location.state as { openJobId?: number } | null;
+    if (state?.openJobId) {
+      setInitialJobId(state.openJobId);
+      // Switch to appropriate tab based on whether job might be active or in history
+      // Default to Job History (tab 1) since it shows all jobs
+      setTabValue(1);
+      // Clear the state to prevent re-triggering on refresh
+      window.history.replaceState({}, document.title);
+    }
+  }, [location.state]);
 
   const handleTabChange = (_event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
+  };
+
+  // Callback to clear initialJobId after modal is opened
+  const handleJobOpened = () => {
+    setInitialJobId(null);
   };
 
   return (
@@ -114,10 +135,10 @@ const JobsLogs: React.FC = () => {
 
         <Box sx={{ p: 3 }}>
           <TabPanel value={tabValue} index={0}>
-            <ActiveJobsTab />
+            <ActiveJobsTab initialJobId={initialJobId} onJobOpened={handleJobOpened} />
           </TabPanel>
           <TabPanel value={tabValue} index={1}>
-            <JobHistoryTab />
+            <JobHistoryTab initialJobId={initialJobId} onJobOpened={handleJobOpened} />
           </TabPanel>
           <TabPanel value={tabValue} index={2}>
             <SystemLogsTab />
@@ -131,7 +152,12 @@ const JobsLogs: React.FC = () => {
 // ============================================================================
 // ACTIVE JOBS TAB
 // ============================================================================
-const ActiveJobsTab: React.FC = () => {
+interface JobsTabProps {
+  initialJobId?: number | null;
+  onJobOpened?: () => void;
+}
+
+const ActiveJobsTab: React.FC<JobsTabProps> = ({ initialJobId, onJobOpened }) => {
   const { enqueueSnackbar } = useSnackbar();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -165,6 +191,18 @@ const ActiveJobsTab: React.FC = () => {
     const interval = setInterval(fetchJobs, 5000);
     return () => clearInterval(interval);
   }, [fetchJobs]);
+
+  // Auto-open job modal if initialJobId is provided and job is in this list
+  useEffect(() => {
+    if (initialJobId && jobs.length > 0) {
+      const job = jobs.find(j => j.id === initialJobId);
+      if (job) {
+        setSelectedJob(job);
+        setModalOpen(true);
+        onJobOpened?.();
+      }
+    }
+  }, [initialJobId, jobs, onJobOpened]);
 
   const handleCancelJob = async (job: Job) => {
     try {
@@ -291,13 +329,14 @@ const ActiveJobsTab: React.FC = () => {
 // ============================================================================
 // JOB HISTORY TAB
 // ============================================================================
-const JobHistoryTab: React.FC = () => {
+const JobHistoryTab: React.FC<JobsTabProps> = ({ initialJobId, onJobOpened }) => {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [hasOpenedInitialJob, setHasOpenedInitialJob] = useState(false);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -331,6 +370,32 @@ const JobHistoryTab: React.FC = () => {
   useEffect(() => {
     fetchJobs();
   }, [fetchJobs]);
+
+  // Auto-open job modal if initialJobId is provided
+  useEffect(() => {
+    if (initialJobId && !hasOpenedInitialJob && !isLoading) {
+      // First check if job is in the current page
+      const job = jobs.find(j => j.id === initialJobId);
+      if (job) {
+        setSelectedJob(job);
+        setModalOpen(true);
+        setHasOpenedInitialJob(true);
+        onJobOpened?.();
+      } else if (jobs.length > 0) {
+        // Job not in current page, need to fetch it directly
+        jobsAPI.get(initialJobId)
+          .then(response => {
+            setSelectedJob(response.data);
+            setModalOpen(true);
+            setHasOpenedInitialJob(true);
+            onJobOpened?.();
+          })
+          .catch(err => {
+            console.error('Failed to load job:', err);
+          });
+      }
+    }
+  }, [initialJobId, jobs, isLoading, hasOpenedInitialJob, onJobOpened]);
 
   const handleRowClick = (job: Job) => {
     setSelectedJob(job);

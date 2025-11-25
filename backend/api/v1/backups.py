@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, and_, func
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 from typing import List, Optional, Generic, TypeVar
@@ -44,6 +45,8 @@ class BackupResponse(BaseModel):
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
     expires_at: Optional[datetime]
+    # Job tracking - allows linking to job logs/progress
+    job_id: Optional[int] = None
     # Verification fields (Issue #6)
     verified: bool = False
     verification_date: Optional[datetime] = None
@@ -220,13 +223,13 @@ async def list_backups(
     current_user: User = Depends(get_current_user)
 ):
     """List backups with optional filtering."""
-    # Build base query
-    stmt = select(Backup)
+    # Build base query with eager loading for job relationship
+    stmt = select(Backup).options(selectinload(Backup.job))
     if status:
         stmt = stmt.where(Backup.status == status)
 
-    # Get total count
-    count_stmt = select(func.count()).select_from(stmt.subquery())
+    # Get total count (without options for efficiency)
+    count_stmt = select(func.count()).select_from(select(Backup).where(Backup.status == status).subquery() if status else Backup)
     total_result = await db.execute(count_stmt)
     total = total_result.scalar_one()
 
@@ -245,7 +248,10 @@ async def get_backup(
     current_user: User = Depends(get_current_user)
 ):
     """Get backup details."""
-    backup = await db.get(Backup, backup_id)
+    # Use query with eager loading for job relationship
+    stmt = select(Backup).options(selectinload(Backup.job)).where(Backup.id == backup_id)
+    result = await db.execute(stmt)
+    backup = result.scalar_one_or_none()
     if not backup:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
