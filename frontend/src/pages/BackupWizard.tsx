@@ -268,7 +268,7 @@ const BackupWizard: React.FC = () => {
                   fullWidth
                   select
                   label="Source Type"
-                  defaultValue="vm"
+                  value={formData.sourceType}
                   {...register('sourceType', {
                     onChange: () => {
                       setValue('vmId', null);
@@ -288,7 +288,7 @@ const BackupWizard: React.FC = () => {
                     select
                     label="Virtual Machine"
                     required
-                    defaultValue=""
+                    value={formData.vmId ?? ''}
                     error={!!errors.vmId}
                     helperText={errors.vmId?.message || (vms.length === 0 ? 'No VMs available. Sync a KVM host first.' : 'Select a VM to backup')}
                     {...register('vmId', { setValueAs: (v) => (v === '' ? null : Number(v)) })}
@@ -310,7 +310,7 @@ const BackupWizard: React.FC = () => {
                     select
                     label="Container"
                     required
-                    defaultValue=""
+                    value={formData.containerId ?? ''}
                     error={!!errors.containerId}
                     helperText={errors.containerId?.message || (containers.length === 0 ? 'No containers available. Sync a Podman host first.' : 'Select a container to backup')}
                     {...register('containerId', { setValueAs: (v) => (v === '' ? null : Number(v)) })}
