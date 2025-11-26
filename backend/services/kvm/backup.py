@@ -802,12 +802,10 @@ Host {hostname}
                 all_disks_capable = all(d["incremental_capable"] for d in result["disk_info"])
                 has_rbd_native = any(d.get("rbd_native_capable") for d in result["disk_info"])
 
-                if support_info["supported"]:
-                    # Full checkpoint API support
-                    result["supported"] = True
-                    result["recommended_method"] = "checkpoint"
-                elif has_rbd_native and has_rbd_disks:
-                    # RBD-native incremental using export-diff (no checkpoint API needed)
+                # IMPORTANT: Check RBD-native FIRST because checkpoint API doesn't work
+                # with raw/RBD storage even if libvirt version supports it
+                if has_rbd_native and has_rbd_disks:
+                    # RBD-native incremental using export-diff (preferred for RBD disks)
                     result["supported"] = True
                     result["recommended_method"] = "rbd_native"
                     result["rbd_native_capable"] = True
@@ -815,6 +813,10 @@ Host {hostname}
                     if has_file_disks:
                         result["mixed_storage"] = True
                         result["reason"] = "RBD disks use native export-diff; file disks use full export"
+                elif support_info["supported"] and not has_rbd_disks:
+                    # Checkpoint API support (only for non-RBD VMs)
+                    result["supported"] = True
+                    result["recommended_method"] = "checkpoint"
                 elif has_file_disks and not has_rbd_disks and all_disks_qcow2:
                     # Fallback to QCOW2 backing file method for file-only setups
                     result["supported"] = True
