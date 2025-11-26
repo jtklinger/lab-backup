@@ -209,7 +209,11 @@ async def trigger_backup(
     )
     db.add(job)
     await db.commit()
-    await db.refresh(backup)
+
+    # Re-fetch backup with job relationship eagerly loaded for response serialization
+    stmt = select(Backup).options(selectinload(Backup.job)).where(Backup.id == backup.id)
+    result = await db.execute(stmt)
+    backup = result.scalar_one()
 
     return backup
 
