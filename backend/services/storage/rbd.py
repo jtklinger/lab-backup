@@ -66,7 +66,7 @@ class RBDBackupService:
 
     def _build_rbd_command(self, *args: str) -> List[str]:
         """Build RBD command with authentication arguments."""
-        cmd = ["rbd"]
+        cmd = ["/usr/bin/rbd"]
 
         if self.ceph_conf:
             cmd.extend(["--conf", self.ceph_conf])
