@@ -27,6 +27,10 @@ RUN apt-get update && apt-get install -y \
     sasl2-bin \
     sshpass \
     openssh-client \
+    # Ceph client libraries for RBD-native incremental backups
+    ceph-common \
+    python3-rbd \
+    python3-rados \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

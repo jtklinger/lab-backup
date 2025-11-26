@@ -7,6 +7,7 @@ from backend.services.storage.base import StorageBackend, StorageError
 from backend.services.storage.local import LocalStorage
 from backend.services.storage.s3 import S3Storage
 from backend.services.storage.smb import SMBStorage
+from backend.services.storage.rbd import RBDBackupService, RBDError, RBDSnapshotError, RBDExportError
 
 
 def create_storage_backend(
@@ -45,5 +46,9 @@ __all__ = [
     "LocalStorage",
     "S3Storage",
     "SMBStorage",
+    "RBDBackupService",
+    "RBDError",
+    "RBDSnapshotError",
+    "RBDExportError",
     "create_storage_backend"
 ]

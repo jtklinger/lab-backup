@@ -777,34 +777,51 @@ Host {hostname}
                         if protocol == "rbd":
                             has_rbd_disks = True
                             disk_info["protocol"] = "rbd"
-                            disk_info["rbd_name"] = source.get("name") if source is not None else None
+                            rbd_name = source.get("name") if source is not None else None
+                            disk_info["rbd_name"] = rbd_name
 
-                            # RBD requires checkpoint API for incremental
-                            if support_info["supported"]:
-                                disk_info["incremental_capable"] = True
-                                disk_info["method"] = "checkpoint"
+                            # Parse RBD pool and image from rbd_name (format: pool/image)
+                            if rbd_name and "/" in rbd_name:
+                                rbd_pool, rbd_image = rbd_name.split("/", 1)
+                                disk_info["rbd_pool"] = rbd_pool
+                                disk_info["rbd_image"] = rbd_image
                             else:
-                                disk_info["incremental_capable"] = False
-                                disk_info["reason"] = "RBD disks require libvirt 6.0+ checkpoint API"
+                                disk_info["rbd_pool"] = "rbd"
+                                disk_info["rbd_image"] = rbd_name
+
+                            # RBD-native incremental is always available (uses export-diff)
+                            # Mark as capable - actual feature check happens at backup time
+                            disk_info["incremental_capable"] = True
+                            disk_info["rbd_native_capable"] = True
+                            disk_info["method"] = "rbd_native"
+                            disk_info["reason"] = "RBD-native incremental using export-diff"
 
                     result["disk_info"].append(disk_info)
 
                 # Determine overall support and recommended method
                 all_disks_capable = all(d["incremental_capable"] for d in result["disk_info"])
+                has_rbd_native = any(d.get("rbd_native_capable") for d in result["disk_info"])
 
                 if support_info["supported"]:
                     # Full checkpoint API support
                     result["supported"] = True
                     result["recommended_method"] = "checkpoint"
+                elif has_rbd_native and has_rbd_disks:
+                    # RBD-native incremental using export-diff (no checkpoint API needed)
+                    result["supported"] = True
+                    result["recommended_method"] = "rbd_native"
+                    result["rbd_native_capable"] = True
+                    # For mixed VMs (RBD + file disks), note that file disks will use full
+                    if has_file_disks:
+                        result["mixed_storage"] = True
+                        result["reason"] = "RBD disks use native export-diff; file disks use full export"
                 elif has_file_disks and not has_rbd_disks and all_disks_qcow2:
                     # Fallback to QCOW2 backing file method for file-only setups
                     result["supported"] = True
                     result["recommended_method"] = "qcow2_backing"
                 else:
                     result["supported"] = False
-                    if has_rbd_disks and not support_info["supported"]:
-                        result["reason"] = f"RBD disks require checkpoint API. {support_info.get('reason', 'Libvirt/QEMU version too old')}"
-                    elif not all_disks_capable:
+                    if not all_disks_capable:
                         result["reason"] = "Not all disks support incremental backup"
                     else:
                         result["reason"] = support_info.get("reason", "Unknown")
@@ -1570,6 +1587,261 @@ Host {hostname}
             raise
         except Exception as e:
             self._log("ERROR", f"Unexpected error during backup: {e}", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            raise
+
+    async def create_rbd_incremental_backup(
+        self,
+        uri: str,
+        vm_uuid: str,
+        backup_dir: Path,
+        parent_snapshots: Optional[Dict[str, str]] = None,
+        new_snapshot_prefix: str = "backup",
+        ssh_password: Optional[str] = None,
+        progress_callback: Optional[callable] = None
+    ) -> Dict[str, Any]:
+        """
+        Create incremental backup using RBD native snapshots (export-diff).
+
+        For each RBD disk:
+        1. Create new snapshot (rbd snap create pool/image@snap_name)
+        2. If parent_snapshot exists: export diff (rbd export-diff)
+        3. If no parent: export full snapshot
+        4. Return snapshot names for next incremental
+
+        Args:
+            uri: Libvirt connection URI
+            vm_uuid: UUID of the VM to backup
+            backup_dir: Directory to store backup files
+            parent_snapshots: Dict mapping disk target to parent snapshot name
+                              e.g., {"vda": "backup-20251125-120000"}
+            new_snapshot_prefix: Prefix for new snapshot names
+            ssh_password: Password for SSH authentication to KVM host
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            Dictionary with backup information including new snapshot names
+        """
+        from backend.services.storage.rbd import RBDBackupService, RBDError
+
+        try:
+            conn = await self._run_in_executor(self._get_connection, uri)
+            rbd_service = RBDBackupService()
+
+            # Extract SSH host from URI
+            ssh_host = None
+            ssh_match = re.search(r'qemu\+ssh://([^/]+)/', uri)
+            if ssh_match:
+                ssh_user_host = ssh_match.group(1)
+                ssh_host = ssh_user_host
+            else:
+                tcp_match = re.search(r'tcp://([^:/]+)', uri)
+                if tcp_match:
+                    ssh_host = f"root@{tcp_match.group(1)}"
+
+            if not ssh_host:
+                raise ValueError(f"RBD backup requires SSH connection, cannot parse URI: {uri}")
+
+            def _get_vm_info():
+                domain = conn.lookupByUUIDString(vm_uuid)
+                vm_name = domain.name()
+                xml_desc = domain.XMLDesc(0)
+                return vm_name, xml_desc
+
+            vm_name, xml_desc = await self._run_in_executor(_get_vm_info)
+
+            self._log("INFO", f"Starting RBD-native incremental backup for VM: {vm_name}", {
+                "vm_name": vm_name,
+                "vm_uuid": vm_uuid,
+                "parent_snapshots": parent_snapshots,
+                "operation": "rbd_incremental_start"
+            })
+
+            # Parse VM XML to get RBD disks
+            root = ET.fromstring(xml_desc)
+            rbd_disks = []
+
+            for disk in root.findall(".//disk[@device='disk']"):
+                disk_type = disk.get("type")
+                if disk_type != "network":
+                    continue
+
+                source = disk.find("source")
+                target = disk.find("target")
+
+                if source is None or target is None:
+                    continue
+
+                protocol = source.get("protocol")
+                if protocol != "rbd":
+                    continue
+
+                rbd_name = source.get("name")
+                if not rbd_name:
+                    continue
+
+                target_dev = target.get("dev")
+
+                # Parse pool/image
+                if "/" in rbd_name:
+                    rbd_pool, rbd_image = rbd_name.split("/", 1)
+                else:
+                    rbd_pool = "rbd"
+                    rbd_image = rbd_name
+
+                rbd_disks.append({
+                    "target": target_dev,
+                    "rbd_name": rbd_name,
+                    "rbd_pool": rbd_pool,
+                    "rbd_image": rbd_image
+                })
+
+            if not rbd_disks:
+                raise ValueError(f"No RBD disks found for VM {vm_name}")
+
+            self._log("INFO", f"Found {len(rbd_disks)} RBD disk(s) for backup", {
+                "disk_count": len(rbd_disks),
+                "disks": [d["target"] for d in rbd_disks]
+            })
+
+            # Create backup directory
+            backup_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save VM XML configuration
+            xml_file = backup_dir / "domain.xml"
+            with open(xml_file, 'w') as f:
+                f.write(xml_desc)
+
+            # Generate snapshot name for this backup
+            new_snap_name = rbd_service.generate_snapshot_name(new_snapshot_prefix)
+
+            backed_up_disks = []
+            new_snapshots = {}
+            total_size = 0
+            is_incremental = parent_snapshots is not None and len(parent_snapshots) > 0
+
+            for disk in rbd_disks:
+                target = disk["target"]
+                rbd_pool = disk["rbd_pool"]
+                rbd_image = disk["rbd_image"]
+                rbd_name = disk["rbd_name"]
+
+                self._log("INFO", f"Processing RBD disk: {target} ({rbd_name})", {
+                    "target": target,
+                    "rbd_name": rbd_name,
+                    "pool": rbd_pool,
+                    "image": rbd_image
+                })
+
+                try:
+                    # Check RBD features for optimal incremental
+                    features = await rbd_service.check_features(rbd_pool, rbd_image, ssh_host)
+                    if not features.get("incremental_capable"):
+                        self._log("WARNING", f"RBD image {rbd_name} missing fast-diff feature, incremental will be slower", {
+                            "rbd_name": rbd_name,
+                            "features": features
+                        })
+
+                    # Create new snapshot
+                    await rbd_service.create_snapshot(
+                        rbd_pool, rbd_image, new_snap_name, ssh_host
+                    )
+                    new_snapshots[target] = new_snap_name
+
+                    # Determine output file
+                    parent_snap = parent_snapshots.get(target) if parent_snapshots else None
+
+                    if parent_snap:
+                        # Incremental: export diff from parent to new snapshot
+                        output_file = backup_dir / f"{target}.rbd-diff"
+                        self._log("INFO", f"Exporting RBD diff for {target}: {parent_snap} -> {new_snap_name}", {
+                            "target": target,
+                            "from_snap": parent_snap,
+                            "to_snap": new_snap_name,
+                            "export_type": "incremental"
+                        })
+
+                        export_result = await rbd_service.export_diff(
+                            rbd_pool, rbd_image,
+                            parent_snap, new_snap_name,
+                            output_file,
+                            ssh_host,
+                            progress_callback
+                        )
+                        disk_size = export_result.get("diff_size_bytes", 0)
+                    else:
+                        # Full: export entire snapshot
+                        output_file = backup_dir / f"{target}.rbd-full"
+                        self._log("INFO", f"Exporting full RBD snapshot for {target}: {new_snap_name}", {
+                            "target": target,
+                            "snap_name": new_snap_name,
+                            "export_type": "full"
+                        })
+
+                        export_result = await rbd_service.export_full(
+                            rbd_pool, rbd_image, new_snap_name,
+                            output_file,
+                            ssh_host,
+                            progress_callback
+                        )
+                        disk_size = export_result.get("size_bytes", 0)
+
+                    total_size += disk_size
+
+                    backed_up_disks.append({
+                        "target": target,
+                        "file": output_file.name,
+                        "size": disk_size,
+                        "type": "rbd",
+                        "rbd_name": rbd_name,
+                        "rbd_pool": rbd_pool,
+                        "rbd_image": rbd_image,
+                        "snapshot": new_snap_name,
+                        "parent_snapshot": parent_snap,
+                        "incremental": parent_snap is not None,
+                        "export_result": export_result
+                    })
+
+                    self._log("INFO", f"RBD disk backup completed: {target} ({disk_size} bytes)", {
+                        "target": target,
+                        "size_bytes": disk_size,
+                        "incremental": parent_snap is not None
+                    })
+
+                except RBDError as e:
+                    self._log("ERROR", f"RBD backup failed for {target}: {e}", {
+                        "target": target,
+                        "rbd_name": rbd_name,
+                        "error": str(e)
+                    })
+                    raise
+
+            self._log("INFO", f"RBD incremental backup completed. Total size: {total_size} bytes", {
+                "vm_name": vm_name,
+                "total_size_bytes": total_size,
+                "disk_count": len(backed_up_disks),
+                "is_incremental": is_incremental,
+                "new_snapshots": new_snapshots,
+                "operation": "rbd_incremental_complete"
+            })
+
+            return {
+                "success": True,
+                "vm_name": vm_name,
+                "vm_uuid": vm_uuid,
+                "disks": backed_up_disks,
+                "total_size": total_size,
+                "backup_dir": str(backup_dir),
+                "incremental": is_incremental,
+                "backup_type": "rbd_native",
+                "snapshots": new_snapshots,
+                "parent_snapshots": parent_snapshots or {}
+            }
+
+        except Exception as e:
+            self._log("ERROR", f"RBD incremental backup failed: {e}", {
                 "error": str(e),
                 "error_type": type(e).__name__
             })
@@ -2567,6 +2839,144 @@ Host {hostname}
                 "chain_restore": True,
                 "chain_length": len(chain_backup_dirs)
             }
+
+    async def restore_rbd_from_chain(
+        self,
+        chain_backup_dirs: List[Path],
+        target_pool: str,
+        target_image: str,
+        ssh_host: str
+    ) -> Dict[str, Any]:
+        """
+        Restore RBD image from a chain of RBD-native incremental backups.
+
+        This uses RBD's native import and import-diff commands to reconstruct
+        the disk image from full + incremental backups.
+
+        Args:
+            chain_backup_dirs: List of backup directories in order (full first, then incrementals)
+            target_pool: Target Ceph pool for restored image
+            target_image: Target RBD image name
+            ssh_host: SSH host for RBD operations
+
+        Returns:
+            Dictionary with restore information
+
+        Process:
+        1. Import full backup (rbd import) to create base image
+        2. Apply each incremental diff in order (rbd import-diff)
+        """
+        from backend.services.storage.rbd import RBDBackupService, RBDError
+
+        log_fn = self._log
+        rbd_service = RBDBackupService()
+
+        log_fn("INFO", f"Starting RBD chain restore: {len(chain_backup_dirs)} backup(s)", {
+            "operation": "rbd_chain_restore_start",
+            "target_pool": target_pool,
+            "target_image": target_image,
+            "chain_length": len(chain_backup_dirs)
+        })
+
+        if not chain_backup_dirs:
+            raise ValueError("No backup directories provided for restore")
+
+        try:
+            # Process the first backup (should be full)
+            full_backup_dir = chain_backup_dirs[0]
+
+            # Look for .rbd-full file
+            full_files = list(full_backup_dir.glob("*.rbd-full"))
+            if not full_files:
+                raise ValueError(f"No RBD full backup file found in {full_backup_dir}")
+
+            full_file = full_files[0]
+            disk_target = full_file.stem  # e.g., "vda"
+
+            log_fn("INFO", f"Importing full RBD backup: {full_file}", {
+                "source": str(full_file),
+                "target": f"{target_pool}/{target_image}"
+            })
+
+            # Import full backup
+            import_result = await rbd_service.import_full(
+                input_path=full_file,
+                pool=target_pool,
+                image=target_image,
+                ssh_host=ssh_host
+            )
+
+            log_fn("INFO", f"Full backup imported: {import_result.get('size_bytes', 0)} bytes", {
+                "import_type": "full",
+                "size_bytes": import_result.get("size_bytes", 0)
+            })
+
+            # Apply incremental diffs in order
+            for i, incr_backup_dir in enumerate(chain_backup_dirs[1:], start=1):
+                # Look for .rbd-diff file with same disk target
+                diff_file = incr_backup_dir / f"{disk_target}.rbd-diff"
+
+                if not diff_file.exists():
+                    # Try to find any .rbd-diff file
+                    diff_files = list(incr_backup_dir.glob("*.rbd-diff"))
+                    if diff_files:
+                        diff_file = diff_files[0]
+                    else:
+                        log_fn("WARNING", f"No diff file found in {incr_backup_dir}, skipping", {
+                            "backup_index": i
+                        })
+                        continue
+
+                log_fn("INFO", f"Applying incremental diff {i}: {diff_file}", {
+                    "source": str(diff_file),
+                    "target": f"{target_pool}/{target_image}",
+                    "backup_index": i
+                })
+
+                diff_result = await rbd_service.import_diff(
+                    input_path=diff_file,
+                    pool=target_pool,
+                    image=target_image,
+                    ssh_host=ssh_host
+                )
+
+                log_fn("INFO", f"Diff {i} applied: {diff_result.get('diff_size_bytes', 0)} bytes", {
+                    "import_type": "incremental",
+                    "backup_index": i,
+                    "diff_size_bytes": diff_result.get("diff_size_bytes", 0)
+                })
+
+            # Get final image info
+            final_info = await rbd_service.get_image_info(target_pool, target_image, ssh_host)
+
+            log_fn("INFO", f"RBD chain restore completed", {
+                "operation": "rbd_chain_restore_complete",
+                "target_image": f"{target_pool}/{target_image}",
+                "chain_length": len(chain_backup_dirs),
+                "final_size": final_info.get("size", 0)
+            })
+
+            return {
+                "success": True,
+                "target_pool": target_pool,
+                "target_image": target_image,
+                "chain_length": len(chain_backup_dirs),
+                "disk_target": disk_target,
+                "final_size": final_info.get("size", 0)
+            }
+
+        except RBDError as e:
+            log_fn("ERROR", f"RBD chain restore failed: {e}", {
+                "error": str(e),
+                "error_type": "RBDError"
+            })
+            raise
+        except Exception as e:
+            log_fn("ERROR", f"Unexpected error during RBD chain restore: {e}", {
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+            raise
 
     def close_connections(self):
         """Close all libvirt connections."""

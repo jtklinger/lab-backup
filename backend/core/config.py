@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     PODMAN_DEFAULT_URI: str = "unix:///run/podman/podman.sock"
     PODMAN_TIMEOUT: int = 300
 
+    # Ceph/RBD Configuration (for RBD-native incremental backups)
+    CEPH_CONF_PATH: str = "/etc/ceph/ceph.conf"
+    CEPH_KEYRING_PATH: Optional[str] = None  # Optional keyring path for cephx auth
+    CEPH_USER: str = "admin"  # Ceph user for authentication
+    CEPH_RBD_FEATURES_CHECK: bool = True  # Check for fast-diff/object-map features
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v):

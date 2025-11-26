@@ -439,8 +439,20 @@ async def _backup_vm(db, schedule, backup, job):
         use_cbt = False
         use_checkpoint_api = False
 
+        # RBD-native incremental backup flag
+        use_rbd_native = False
+
         if is_incremental:
-            if incremental_method == "checkpoint":
+            if incremental_method == "rbd_native":
+                use_rbd_native = True
+                log = JobLog(
+                    job_id=job.id,
+                    level="INFO",
+                    message="Using RBD-native incremental backup (export-diff)"
+                )
+                db.add(log)
+                await db.commit()
+            elif incremental_method == "checkpoint":
                 use_checkpoint_api = True
                 use_cbt = True
                 log = JobLog(
@@ -501,13 +513,40 @@ async def _backup_vm(db, schedule, backup, job):
             """Update progress tracker when disk bytes are transferred."""
             progress_tracker.update_disk(disk_target, bytes_transferred, bytes_total)
 
-        # Attempt backup with checkpoint API or CBT if requested, with fallback (Issue #15)
+        # Attempt backup with checkpoint API, RBD-native, or CBT if requested, with fallback (Issue #15)
         backup_result = None
         cbt_fallback = False
+        rbd_fallback = False
         new_checkpoint_name = None
 
+        # Get parent RBD snapshots from parent backup's metadata (for RBD-native incremental)
+        parent_rbd_snapshots = None
+        if use_rbd_native and backup.parent_backup_id:
+            parent_backup = await db.get(Backup, backup.parent_backup_id)
+            if parent_backup and parent_backup.backup_metadata:
+                parent_rbd_snapshots = parent_backup.backup_metadata.get("rbd_snapshots")
+
         try:
-            if use_checkpoint_api:
+            if use_rbd_native:
+                # Use RBD-native incremental backup (export-diff)
+                backup_result = await kvm_service.create_rbd_incremental_backup(
+                    uri=kvm_host.uri,
+                    vm_uuid=vm.uuid,
+                    backup_dir=backup_dir,
+                    parent_snapshots=parent_rbd_snapshots,
+                    ssh_password=ssh_password,
+                    progress_callback=on_disk_progress
+                )
+
+                # Store RBD snapshot names in backup metadata for next incremental
+                if backup_result.get("snapshots"):
+                    if not backup.backup_metadata:
+                        backup.backup_metadata = {}
+                    backup.backup_metadata["rbd_snapshots"] = backup_result["snapshots"]
+                    backup.backup_metadata["rbd_incremental"] = backup_result.get("incremental", False)
+                    backup.backup_metadata["rbd_parent_snapshots"] = parent_rbd_snapshots or {}
+
+            elif use_checkpoint_api:
                 # Use the new checkpoint-based incremental backup
                 import uuid as uuid_module
                 new_checkpoint_name = f"backup-{vm.name}-{uuid_module.uuid4().hex[:8]}"
@@ -535,7 +574,36 @@ async def _backup_vm(db, schedule, backup, job):
                     # excluded_disks=excluded_disks  # TODO: Add this parameter to create_backup()
                 )
         except Exception as e:
-            if use_checkpoint_api or use_cbt:
+            if use_rbd_native:
+                # RBD-native backup failed, fall back to full backup
+                logger.warning(f"RBD-native incremental backup failed: {e}. Falling back to full backup.")
+                log = JobLog(
+                    job_id=job.id,
+                    level="WARNING",
+                    message=f"RBD-native incremental backup failed ({str(e)}), falling back to full backup"
+                )
+                db.add(log)
+                await db.commit()
+
+                rbd_fallback = True
+                # Clear RBD snapshot tracking on fallback
+                if backup.backup_metadata:
+                    backup.backup_metadata.pop("rbd_snapshots", None)
+
+                # Retry with full backup using traditional qemu-img method
+                backup_result = await kvm_service.create_backup(
+                    uri=kvm_host.uri,
+                    vm_uuid=vm.uuid,
+                    backup_dir=backup_dir,
+                    incremental=False,
+                    use_cbt=False,
+                    ssh_password=ssh_password,
+                    progress_callback=on_disk_progress
+                )
+                # Update backup mode to FULL since we fell back
+                backup.backup_mode = BackupMode.FULL
+
+            elif use_checkpoint_api or use_cbt:
                 # Checkpoint/CBT backup failed, fall back to full backup
                 logger.warning(f"Incremental backup failed: {e}. Falling back to full backup.")
                 log = JobLog(
@@ -872,6 +940,56 @@ async def _backup_vm(db, schedule, backup, job):
             db.add(log)
 
         await db.commit()
+
+        # Clean up old RBD snapshots after successful backup (Phase 4)
+        # We keep only the latest snapshot; delete the parent's snapshot
+        if use_rbd_native and not rbd_fallback and parent_rbd_snapshots:
+            from backend.services.storage.rbd import RBDBackupService
+            rbd_service = RBDBackupService()
+
+            # Extract SSH host from URI
+            ssh_host = None
+            ssh_match = re.search(r'qemu\+ssh://([^/]+)/', kvm_host.uri)
+            if ssh_match:
+                ssh_host = ssh_match.group(1)
+            else:
+                tcp_match = re.search(r'tcp://([^:/]+)', kvm_host.uri)
+                if tcp_match:
+                    ssh_host = f"root@{tcp_match.group(1)}"
+
+            if ssh_host:
+                for disk_target, old_snap in parent_rbd_snapshots.items():
+                    # Find the disk info from backup result to get pool/image
+                    disk_info = next(
+                        (d for d in backup_result.get("disks", []) if d.get("target") == disk_target),
+                        None
+                    )
+                    if disk_info and disk_info.get("rbd_pool") and disk_info.get("rbd_image"):
+                        try:
+                            deleted = await rbd_service.delete_snapshot(
+                                disk_info["rbd_pool"],
+                                disk_info["rbd_image"],
+                                old_snap,
+                                ssh_host
+                            )
+                            if deleted:
+                                log = JobLog(
+                                    job_id=job.id,
+                                    level="INFO",
+                                    message=f"Deleted old RBD snapshot: {disk_info['rbd_pool']}/{disk_info['rbd_image']}@{old_snap}"
+                                )
+                                db.add(log)
+                        except Exception as e:
+                            # Log but don't fail the backup for snapshot cleanup errors
+                            logger.warning(f"Failed to delete old RBD snapshot {old_snap}: {e}")
+                            log = JobLog(
+                                job_id=job.id,
+                                level="WARNING",
+                                message=f"Failed to clean up old RBD snapshot {old_snap}: {str(e)}"
+                            )
+                            db.add(log)
+
+                await db.commit()
 
         # Clean up progress tracker
         remove_tracker(job.id)
