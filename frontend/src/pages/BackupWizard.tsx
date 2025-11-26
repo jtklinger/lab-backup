@@ -346,7 +346,7 @@ const BackupWizard: React.FC = () => {
                   select
                   label="Storage Backend"
                   required
-                  defaultValue=""
+                  value={formData.storageBackendId ?? ''}
                   error={!!errors.storageBackendId}
                   helperText={errors.storageBackendId?.message || (storageBackends.length === 0 ? 'No storage backends available. Add one in Storage settings.' : 'Select destination for backup')}
                   {...register('storageBackendId', { setValueAs: (v) => (v === '' ? null : Number(v)) })}

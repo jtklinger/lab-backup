@@ -1595,6 +1595,8 @@ async def _update_storage_usage_async():
         result = await db.execute(stmt)
         backends = result.scalars().all()
 
+        alerts_sent = 0
+
         for backend_model in backends:
             try:
                 storage = create_storage_backend(
@@ -1604,16 +1606,56 @@ async def _update_storage_usage_async():
 
                 usage = await storage.get_usage()
 
-                backend_model.used = usage.get("used", 0) // (1024 ** 3)  # Convert to GB
-                backend_model.capacity = usage.get("capacity", 0) // (1024 ** 3)
+                # Get usage values
+                used_bytes = usage.get("used", 0)
+                auto_capacity = usage.get("capacity", 0)
+
+                # Determine capacity: use auto-detected if available, otherwise use quota_gb
+                if auto_capacity > 0:
+                    capacity_bytes = auto_capacity
+                elif backend_model.quota_gb:
+                    capacity_bytes = backend_model.quota_gb * (1024 ** 3)
+                else:
+                    capacity_bytes = 0
+
+                # Update database fields (stored in GB)
+                backend_model.used = used_bytes // (1024 ** 3)
+                backend_model.capacity = capacity_bytes // (1024 ** 3) if capacity_bytes > 0 else None
                 backend_model.last_check = datetime.utcnow().isoformat()
 
+                # Check if threshold exceeded and send notification
+                if capacity_bytes > 0:
+                    used_percent = (used_bytes / capacity_bytes) * 100
+
+                    if used_percent >= backend_model.threshold:
+                        logger.warning(
+                            f"Storage backend '{backend_model.name}' exceeded threshold: "
+                            f"{used_percent:.1f}% used (threshold: {backend_model.threshold}%)"
+                        )
+
+                        # Send alert notification
+                        try:
+                            from backend.services.email import StorageAlertEmailService
+                            alert_service = StorageAlertEmailService()
+                            await alert_service.send_storage_threshold_alert(
+                                backend_id=backend_model.id,
+                                backend_name=backend_model.name,
+                                backend_type=backend_model.type.value,
+                                used_gb=used_bytes / (1024 ** 3),
+                                capacity_gb=capacity_bytes / (1024 ** 3),
+                                used_percent=used_percent,
+                                threshold=backend_model.threshold
+                            )
+                            alerts_sent += 1
+                        except Exception as alert_error:
+                            logger.error(f"Failed to send storage alert for {backend_model.name}: {alert_error}")
+
             except Exception as e:
-                print(f"Error updating storage usage for {backend_model.name}: {e}")
+                logger.error(f"Error updating storage usage for {backend_model.name}: {e}")
 
         await db.commit()
 
-        return {"backends_updated": len(backends)}
+        return {"backends_updated": len(backends), "alerts_sent": alerts_sent}
 
 
 @celery_app.task(name="backend.worker.cleanup_logs")

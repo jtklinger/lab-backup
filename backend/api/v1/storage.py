@@ -22,6 +22,15 @@ class StorageBackendCreate(BaseModel):
     type: StorageType
     config: dict
     threshold: int = 80
+    quota_gb: Optional[int] = None  # Manual quota in GB
+
+
+class StorageBackendUpdate(BaseModel):
+    name: Optional[str] = None
+    config: Optional[dict] = None
+    enabled: Optional[bool] = None
+    threshold: Optional[int] = None
+    quota_gb: Optional[int] = None
 
 
 class StorageBackendResponse(BaseModel):
@@ -32,6 +41,7 @@ class StorageBackendResponse(BaseModel):
     enabled: bool
     capacity: Optional[int]
     used: Optional[int]
+    quota_gb: Optional[int]
     threshold: int
     last_check: Optional[str]
     encryption_strategy: Optional[str]
@@ -80,6 +90,7 @@ async def create_storage_backend(
         type=backend_data.type,
         config=backend_data.config,
         threshold=backend_data.threshold,
+        quota_gb=backend_data.quota_gb,
         enabled=True
     )
 
@@ -88,6 +99,81 @@ async def create_storage_backend(
     await db.refresh(backend)
 
     return backend
+
+
+@router.put("/{backend_id}", response_model=StorageBackendResponse)
+async def update_storage_backend(
+    backend_id: int,
+    update_data: StorageBackendUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.OPERATOR))
+):
+    """Update a storage backend."""
+    backend = await db.get(StorageBackend, backend_id)
+    if not backend:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Storage backend not found"
+        )
+
+    # Update only provided fields
+    if update_data.name is not None:
+        backend.name = update_data.name
+    if update_data.enabled is not None:
+        backend.enabled = update_data.enabled
+    if update_data.threshold is not None:
+        backend.threshold = update_data.threshold
+    if update_data.quota_gb is not None:
+        backend.quota_gb = update_data.quota_gb
+    if update_data.config is not None:
+        # Test new config before applying
+        try:
+            storage = create_storage(backend.type, update_data.config)
+            if not await storage.test_connection():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Failed to connect with new configuration"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid configuration: {str(e)}"
+            )
+        backend.config = update_data.config
+
+    await db.commit()
+    await db.refresh(backend)
+    return backend
+
+
+@router.delete("/{backend_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_storage_backend(
+    backend_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_role(UserRole.ADMIN))
+):
+    """Delete a storage backend (Admin only)."""
+    backend = await db.get(StorageBackend, backend_id)
+    if not backend:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Storage backend not found"
+        )
+
+    # Check if backend has any backups
+    from backend.models.backup import Backup
+    stmt = select(Backup).where(Backup.storage_backend_id == backend_id).limit(1)
+    result = await db.execute(stmt)
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete storage backend with existing backups"
+        )
+
+    await db.delete(backend)
+    await db.commit()
 
 
 @router.get("/{backend_id}")
@@ -173,11 +259,31 @@ async def get_storage_usage(
     storage = create_storage(backend.type, backend.config)
     usage = await storage.get_usage()
 
+    # Determine capacity: use auto-detected if available, otherwise use quota_gb
+    used_bytes = usage.get("used", 0)
+    auto_capacity = usage.get("capacity", 0)
+
+    if auto_capacity > 0:
+        capacity_bytes = auto_capacity
+    elif backend.quota_gb:
+        capacity_bytes = backend.quota_gb * (1024 ** 3)
+    else:
+        capacity_bytes = 0
+
+    # Calculate percentages
+    used_percent = (used_bytes / capacity_bytes) * 100 if capacity_bytes > 0 else 0
+    threshold_exceeded = used_percent >= backend.threshold if capacity_bytes > 0 else False
+
     return {
         "backend_id": backend_id,
         "name": backend.name,
-        "used": usage.get("used", 0),
-        "capacity": usage.get("capacity", 0),
-        "available": usage.get("available", 0),
-        "used_percent": (usage.get("used", 0) / usage.get("capacity", 1)) * 100 if usage.get("capacity", 0) > 0 else 0
+        "used": used_bytes,
+        "used_gb": round(used_bytes / (1024 ** 3), 2),
+        "capacity": capacity_bytes,
+        "capacity_gb": round(capacity_bytes / (1024 ** 3), 2) if capacity_bytes > 0 else None,
+        "quota_gb": backend.quota_gb,
+        "available": capacity_bytes - used_bytes if capacity_bytes > 0 else 0,
+        "used_percent": round(used_percent, 1),
+        "threshold": backend.threshold,
+        "threshold_exceeded": threshold_exceeded
     }

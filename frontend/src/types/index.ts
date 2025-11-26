@@ -110,6 +110,7 @@ export interface StorageBackend {
   enabled: boolean;
   capacity?: number;
   used?: number;
+  quota_gb?: number;
   threshold: number;
   last_check?: string;
   encryption_strategy?: string;
@@ -117,6 +118,20 @@ export interface StorageBackend {
   encryption_config?: Record<string, any>;
   created_at: string;
   updated_at?: string;
+}
+
+export interface StorageUsage {
+  backend_id: number;
+  name: string;
+  used: number;
+  used_gb: number;
+  capacity: number;
+  capacity_gb: number | null;
+  quota_gb: number | null;
+  available: number;
+  used_percent: number;
+  threshold: number;
+  threshold_exceeded: boolean;
 }
 
 // Backups

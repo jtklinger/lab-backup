@@ -39,9 +39,10 @@ class StorageBackend(Base):
     )
     config: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)
     enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
-    capacity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in GB
+    capacity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in GB (auto-detected or from quota)
     used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # in GB
-    threshold: Mapped[int] = mapped_column(Integer, default=80, nullable=False)  # percentage
+    quota_gb: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Manual quota limit in GB
+    threshold: Mapped[int] = mapped_column(Integer, default=80, nullable=False)  # Alert threshold percentage
     last_check: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
     # Per-Storage Encryption (Issue #11)
