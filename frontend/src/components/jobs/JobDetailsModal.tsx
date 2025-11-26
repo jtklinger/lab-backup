@@ -30,7 +30,7 @@ import {
   Storage as StorageIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
-import type { Job, JobLog, JobProgress } from '../../types';
+import type { Job, JobLog } from '../../types';
 import { useJobWebSocket } from '../../hooks/useJobWebSocket';
 import { jobsAPI } from '../../services/api';
 

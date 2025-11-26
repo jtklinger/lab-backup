@@ -199,6 +199,7 @@ const BackupWizard: React.FC = () => {
         storage_backend_id: data.storageBackendId,
         encryption_enabled: data.encryptionEnabled,
         retention_days: data.retentionDays,
+        compression_algorithm: data.compressionAlgorithm,
       };
 
       // Add optional fields

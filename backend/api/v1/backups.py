@@ -83,6 +83,7 @@ class TriggerBackupRequest(BaseModel):
     backup_mode: BackupMode = Field(BackupMode.FULL, description="Backup mode: full or incremental")
     storage_backend_id: int = Field(..., description="ID of storage backend to use")
     encryption_enabled: bool = Field(False, description="Whether to encrypt the backup")
+    compression_algorithm: Optional[str] = Field(None, description="Compression algorithm: gzip, zstd, bzip2, xz, or none")
     retention_days: Optional[int] = Field(None, description="Retention period in days (defaults to system setting)")
     excluded_disks: Optional[list[str]] = Field(None, description="List of disk targets/paths to exclude from backup")
 
@@ -172,6 +173,10 @@ async def trigger_backup(
         "triggered_by": current_user.username,
         "triggered_at": datetime.utcnow().isoformat()
     }
+
+    # Add compression_algorithm to metadata if provided
+    if request.compression_algorithm is not None:
+        backup_metadata["compression_algorithm"] = request.compression_algorithm
 
     # Add excluded_disks to metadata if provided
     if request.excluded_disks:
