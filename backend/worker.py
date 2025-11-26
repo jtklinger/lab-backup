@@ -387,10 +387,10 @@ async def _backup_vm(db, schedule, backup, job):
 
         # Determine current chain length
         chain_length = 0
+        from sqlalchemy import func as sa_func, and_
         if schedule and schedule.last_full_backup_id:
             # Count incrementals since last full (scheduled backups)
-            from sqlalchemy import func, and_
-            chain_count_stmt = select(func.count(Backup.id)).where(
+            chain_count_stmt = select(sa_func.count(Backup.id)).where(
                 and_(
                     Backup.schedule_id == schedule.id,
                     Backup.id > schedule.last_full_backup_id,
@@ -405,7 +405,7 @@ async def _backup_vm(db, schedule, backup, job):
             parent = await db.get(Backup, backup.parent_backup_id)
             if parent and parent.chain_id:
                 # Count backups in the chain
-                chain_count_stmt = select(func.count(Backup.id)).where(
+                chain_count_stmt = select(sa_func.count(Backup.id)).where(
                     Backup.chain_id == parent.chain_id
                 )
                 result = await db.execute(chain_count_stmt)
