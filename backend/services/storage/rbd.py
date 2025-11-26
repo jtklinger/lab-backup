@@ -110,18 +110,32 @@ class RBDBackupService:
         self,
         ssh_host: str,
         cmd: List[str],
-        check: bool = True
+        check: bool = True,
+        ssh_password: Optional[str] = None
     ) -> subprocess.CompletedProcess:
         """Run a command on remote host via SSH."""
-        ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + cmd
+        if ssh_password:
+            # Use sshpass for password authentication
+            ssh_cmd = [
+                "sshpass", "-p", ssh_password,
+                "ssh", "-o", "StrictHostKeyChecking=no", ssh_host
+            ] + cmd
+        else:
+            # Use key-based authentication
+            ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + cmd
         return await self._run_command(ssh_cmd, check=check)
 
-    async def test_connection(self, ssh_host: Optional[str] = None) -> bool:
+    async def test_connection(
+        self,
+        ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None
+    ) -> bool:
         """
         Test connection to Ceph cluster.
 
         Args:
             ssh_host: If provided, test connection via SSH to this host
+            ssh_password: Password for SSH authentication
 
         Returns:
             True if connection successful
@@ -130,7 +144,7 @@ class RBDBackupService:
             cmd = self._build_rbd_command("pool", "ls")
 
             if ssh_host:
-                result = await self._run_ssh_command(ssh_host, cmd, check=False)
+                result = await self._run_ssh_command(ssh_host, cmd, check=False, ssh_password=ssh_password)
             else:
                 result = await self._run_command(cmd, check=False)
 
@@ -149,7 +163,8 @@ class RBDBackupService:
         self,
         pool: str,
         image: str,
-        ssh_host: Optional[str] = None
+        ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Get information about an RBD image.
@@ -158,6 +173,7 @@ class RBDBackupService:
             pool: Ceph pool name
             image: RBD image name
             ssh_host: Run command via SSH on this host
+            ssh_password: Password for SSH authentication
 
         Returns:
             Dictionary with image information (size, features, etc.)
@@ -165,7 +181,7 @@ class RBDBackupService:
         cmd = self._build_rbd_command("info", f"{pool}/{image}", "--format", "json")
 
         if ssh_host:
-            result = await self._run_ssh_command(ssh_host, cmd)
+            result = await self._run_ssh_command(ssh_host, cmd, ssh_password=ssh_password)
         else:
             result = await self._run_command(cmd)
 
@@ -176,7 +192,8 @@ class RBDBackupService:
         self,
         pool: str,
         image: str,
-        ssh_host: Optional[str] = None
+        ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None
     ) -> Dict[str, bool]:
         """
         Check if RBD image has features required for efficient incremental backups.
@@ -185,6 +202,7 @@ class RBDBackupService:
             pool: Ceph pool name
             image: RBD image name
             ssh_host: Run command via SSH on this host
+            ssh_password: Password for SSH authentication
 
         Returns:
             Dictionary with feature availability:
@@ -193,7 +211,7 @@ class RBDBackupService:
             - incremental_capable: True if both required features are present
         """
         try:
-            info = await self.get_image_info(pool, image, ssh_host)
+            info = await self.get_image_info(pool, image, ssh_host, ssh_password)
             features = info.get("features", [])
 
             # Features can be a list of strings or a single string
@@ -236,7 +254,8 @@ class RBDBackupService:
         self,
         pool: str,
         image: str,
-        ssh_host: Optional[str] = None
+        ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         List all snapshots for an RBD image.
@@ -245,6 +264,7 @@ class RBDBackupService:
             pool: Ceph pool name
             image: RBD image name
             ssh_host: Run command via SSH on this host
+            ssh_password: Password for SSH authentication
 
         Returns:
             List of snapshot information dictionaries
@@ -252,7 +272,7 @@ class RBDBackupService:
         cmd = self._build_rbd_command("snap", "ls", f"{pool}/{image}", "--format", "json")
 
         if ssh_host:
-            result = await self._run_ssh_command(ssh_host, cmd)
+            result = await self._run_ssh_command(ssh_host, cmd, ssh_password=ssh_password)
         else:
             result = await self._run_command(cmd)
 
@@ -265,7 +285,8 @@ class RBDBackupService:
         pool: str,
         image: str,
         snap_name: Optional[str] = None,
-        ssh_host: Optional[str] = None
+        ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None
     ) -> str:
         """
         Create an RBD snapshot.
@@ -275,6 +296,7 @@ class RBDBackupService:
             image: RBD image name
             snap_name: Snapshot name (auto-generated if not provided)
             ssh_host: Run command via SSH on this host
+            ssh_password: Password for SSH authentication
 
         Returns:
             Full snapshot specification (pool/image@snap_name)
@@ -289,7 +311,7 @@ class RBDBackupService:
 
         try:
             if ssh_host:
-                await self._run_ssh_command(ssh_host, cmd)
+                await self._run_ssh_command(ssh_host, cmd, ssh_password=ssh_password)
             else:
                 await self._run_command(cmd)
 
@@ -304,7 +326,8 @@ class RBDBackupService:
         pool: str,
         image: str,
         snap_name: str,
-        ssh_host: Optional[str] = None
+        ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None
     ) -> bool:
         """
         Delete an RBD snapshot.
@@ -314,6 +337,7 @@ class RBDBackupService:
             image: RBD image name
             snap_name: Snapshot name to delete
             ssh_host: Run command via SSH on this host
+            ssh_password: Password for SSH authentication
 
         Returns:
             True if deletion successful
@@ -325,7 +349,7 @@ class RBDBackupService:
 
         try:
             if ssh_host:
-                await self._run_ssh_command(ssh_host, cmd)
+                await self._run_ssh_command(ssh_host, cmd, ssh_password=ssh_password)
             else:
                 await self._run_command(cmd)
 
@@ -343,6 +367,7 @@ class RBDBackupService:
         snap_name: str,
         output_path: Path,
         ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> Dict[str, Any]:
         """
@@ -354,6 +379,7 @@ class RBDBackupService:
             snap_name: Snapshot to export from
             output_path: Local path to write export to
             ssh_host: Run export on remote host and stream to local
+            ssh_password: Password for SSH authentication
             progress_callback: Optional callback(bytes_written, total_bytes)
 
         Returns:
@@ -369,7 +395,10 @@ class RBDBackupService:
                 # Export on remote host, pipe to local file
                 # Use rbd export with - for stdout, pipe through SSH
                 remote_cmd = self._build_rbd_command("export", snap_spec, "-")
-                ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + remote_cmd
+                if ssh_password:
+                    ssh_cmd = ["sshpass", "-p", ssh_password, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host] + remote_cmd
+                else:
+                    ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + remote_cmd
 
                 with open(output_path, "wb") as f:
                     process = await asyncio.create_subprocess_exec(
@@ -419,6 +448,7 @@ class RBDBackupService:
         to_snap: str,
         output_path: Path,
         ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None
     ) -> Dict[str, Any]:
         """
@@ -434,6 +464,7 @@ class RBDBackupService:
             to_snap: Target snapshot name (current backup)
             output_path: Local path to write diff export to
             ssh_host: Run export on remote host and stream to local
+            ssh_password: Password for SSH authentication
             progress_callback: Optional callback(bytes_written, total_bytes)
 
         Returns:
@@ -451,7 +482,10 @@ class RBDBackupService:
                 remote_cmd = self._build_rbd_command(
                     "export-diff", "--from-snap", from_snap, to_spec, "-"
                 )
-                ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + remote_cmd
+                if ssh_password:
+                    ssh_cmd = ["sshpass", "-p", ssh_password, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host] + remote_cmd
+                else:
+                    ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + remote_cmd
 
                 with open(output_path, "wb") as f:
                     process = await asyncio.create_subprocess_exec(
@@ -501,7 +535,8 @@ class RBDBackupService:
         input_path: Path,
         pool: str,
         image: str,
-        ssh_host: Optional[str] = None
+        ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Import full RBD image from backup file.
@@ -511,6 +546,7 @@ class RBDBackupService:
             pool: Target Ceph pool
             image: Target RBD image name
             ssh_host: Run import on remote host
+            ssh_password: Password for SSH authentication
 
         Returns:
             Dictionary with import information
@@ -524,7 +560,10 @@ class RBDBackupService:
             if ssh_host:
                 # Stream local file to remote rbd import
                 cmd = self._build_rbd_command("import", "-", target_spec)
-                ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + cmd
+                if ssh_password:
+                    ssh_cmd = ["sshpass", "-p", ssh_password, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host] + cmd
+                else:
+                    ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + cmd
 
                 with open(input_path, "rb") as f:
                     process = await asyncio.create_subprocess_exec(
@@ -562,7 +601,8 @@ class RBDBackupService:
         input_path: Path,
         pool: str,
         image: str,
-        ssh_host: Optional[str] = None
+        ssh_host: Optional[str] = None,
+        ssh_password: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Apply incremental diff to existing RBD image.
@@ -572,6 +612,7 @@ class RBDBackupService:
             pool: Target Ceph pool
             image: Target RBD image name (must already exist)
             ssh_host: Run import on remote host
+            ssh_password: Password for SSH authentication
 
         Returns:
             Dictionary with import information
@@ -585,7 +626,10 @@ class RBDBackupService:
             if ssh_host:
                 # Stream local diff to remote rbd import-diff
                 cmd = self._build_rbd_command("import-diff", "-", target_spec)
-                ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + cmd
+                if ssh_password:
+                    ssh_cmd = ["sshpass", "-p", ssh_password, "ssh", "-o", "StrictHostKeyChecking=no", ssh_host] + cmd
+                else:
+                    ssh_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes", ssh_host] + cmd
 
                 with open(input_path, "rb") as f:
                     process = await asyncio.create_subprocess_exec(

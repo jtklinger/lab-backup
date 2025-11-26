@@ -970,7 +970,8 @@ async def _backup_vm(db, schedule, backup, job):
                                 disk_info["rbd_pool"],
                                 disk_info["rbd_image"],
                                 old_snap,
-                                ssh_host
+                                ssh_host,
+                                ssh_password
                             )
                             if deleted:
                                 log = JobLog(

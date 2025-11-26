@@ -1739,7 +1739,7 @@ Host {hostname}
 
                 try:
                     # Check RBD features for optimal incremental
-                    features = await rbd_service.check_features(rbd_pool, rbd_image, ssh_host)
+                    features = await rbd_service.check_features(rbd_pool, rbd_image, ssh_host, ssh_password)
                     if not features.get("incremental_capable"):
                         self._log("WARNING", f"RBD image {rbd_name} missing fast-diff feature, incremental will be slower", {
                             "rbd_name": rbd_name,
@@ -1748,7 +1748,7 @@ Host {hostname}
 
                     # Create new snapshot
                     await rbd_service.create_snapshot(
-                        rbd_pool, rbd_image, new_snap_name, ssh_host
+                        rbd_pool, rbd_image, new_snap_name, ssh_host, ssh_password
                     )
                     new_snapshots[target] = new_snap_name
 
@@ -1770,6 +1770,7 @@ Host {hostname}
                             parent_snap, new_snap_name,
                             output_file,
                             ssh_host,
+                            ssh_password,
                             progress_callback
                         )
                         disk_size = export_result.get("diff_size_bytes", 0)
@@ -1786,6 +1787,7 @@ Host {hostname}
                             rbd_pool, rbd_image, new_snap_name,
                             output_file,
                             ssh_host,
+                            ssh_password,
                             progress_callback
                         )
                         disk_size = export_result.get("size_bytes", 0)
