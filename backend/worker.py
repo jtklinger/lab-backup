@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 from celery import Celery
 from celery.schedules import crontab
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from backend.core.config import settings
 from backend.core.logging_handler import LoggingContext
@@ -388,7 +388,7 @@ async def _backup_vm(db, schedule, backup, job):
         # Determine current chain length
         chain_length = 0
         if schedule and schedule.last_full_backup_id:
-            # Count incrementals since last full
+            # Count incrementals since last full (scheduled backups)
             from sqlalchemy import func, and_
             chain_count_stmt = select(func.count(Backup.id)).where(
                 and_(
@@ -399,6 +399,20 @@ async def _backup_vm(db, schedule, backup, job):
             )
             result = await db.execute(chain_count_stmt)
             chain_length = result.scalar() or 0
+        elif backup.parent_backup_id:
+            # One-time incremental backup - count chain from parent
+            # Find the chain by traversing up to the full backup
+            parent = await db.get(Backup, backup.parent_backup_id)
+            if parent and parent.chain_id:
+                # Count backups in the chain
+                chain_count_stmt = select(func.count(Backup.id)).where(
+                    Backup.chain_id == parent.chain_id
+                )
+                result = await db.execute(chain_count_stmt)
+                chain_length = result.scalar() or 0
+            elif parent:
+                # Parent exists but no chain_id - at minimum we have 1 backup
+                chain_length = 1
 
         # Determine whether to use incremental backup
         mode_decision = await kvm_service.determine_backup_mode(
