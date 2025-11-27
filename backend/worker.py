@@ -10,6 +10,7 @@ from typing import Optional
 from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import select, func
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.core.config import settings
 from backend.core.logging_handler import LoggingContext
@@ -545,6 +546,8 @@ async def _backup_vm(db, schedule, backup, job):
                     backup.backup_metadata["rbd_snapshots"] = backup_result["snapshots"]
                     backup.backup_metadata["rbd_incremental"] = backup_result.get("incremental", False)
                     backup.backup_metadata["rbd_parent_snapshots"] = parent_rbd_snapshots or {}
+                    # Flag the JSON field as modified so SQLAlchemy detects the change
+                    flag_modified(backup, "backup_metadata")
 
             elif use_checkpoint_api:
                 # Use the new checkpoint-based incremental backup
