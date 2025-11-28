@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 from celery import Celery
 from celery.schedules import crontab
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 from sqlalchemy.orm.attributes import flag_modified
 
 from backend.core.config import settings
@@ -520,16 +520,31 @@ async def _backup_vm(db, schedule, backup, job):
         rbd_fallback = False
         new_checkpoint_name = None
 
-        # Get parent RBD snapshots from parent backup's metadata (for RBD-native incremental)
+        # Get parent RBD snapshots from the most recent backup with rbd_snapshots (for RBD-native incremental)
+        # Note: backup.parent_backup_id points to last FULL backup, but for RBD-native we need
+        # the most recent backup that has rbd_snapshots (could be full or incremental)
         parent_rbd_snapshots = None
-        if use_rbd_native and backup.parent_backup_id:
-            parent_backup = await db.get(Backup, backup.parent_backup_id)
-            logger.info(f"RBD incremental: looking up parent backup {backup.parent_backup_id}, found: {parent_backup is not None}")
-            if parent_backup:
-                logger.info(f"Parent backup metadata: {parent_backup.backup_metadata}")
-                if parent_backup.backup_metadata:
-                    parent_rbd_snapshots = parent_backup.backup_metadata.get("rbd_snapshots")
-                    logger.info(f"Parent RBD snapshots: {parent_rbd_snapshots}")
+        if use_rbd_native:
+            # Find the most recent completed backup for this VM that has rbd_snapshots
+            stmt = select(Backup).where(
+                and_(
+                    Backup.source_type == backup.source_type,
+                    Backup.source_id == backup.source_id,
+                    Backup.status == BackupStatus.COMPLETED,
+                    Backup.id != backup.id  # Exclude current backup
+                )
+            ).order_by(Backup.completed_at.desc()).limit(10)
+            result = await db.execute(stmt)
+            recent_backups = result.scalars().all()
+
+            for recent_backup in recent_backups:
+                if recent_backup.backup_metadata and recent_backup.backup_metadata.get("rbd_snapshots"):
+                    parent_rbd_snapshots = recent_backup.backup_metadata.get("rbd_snapshots")
+                    logger.info(f"RBD incremental: found parent backup {recent_backup.id} with rbd_snapshots: {parent_rbd_snapshots}")
+                    break
+
+            if not parent_rbd_snapshots:
+                logger.info("RBD incremental: no parent backup with rbd_snapshots found, will do full export")
 
         try:
             if use_rbd_native:
