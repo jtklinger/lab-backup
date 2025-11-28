@@ -524,8 +524,12 @@ async def _backup_vm(db, schedule, backup, job):
         parent_rbd_snapshots = None
         if use_rbd_native and backup.parent_backup_id:
             parent_backup = await db.get(Backup, backup.parent_backup_id)
-            if parent_backup and parent_backup.backup_metadata:
-                parent_rbd_snapshots = parent_backup.backup_metadata.get("rbd_snapshots")
+            logger.info(f"RBD incremental: looking up parent backup {backup.parent_backup_id}, found: {parent_backup is not None}")
+            if parent_backup:
+                logger.info(f"Parent backup metadata: {parent_backup.backup_metadata}")
+                if parent_backup.backup_metadata:
+                    parent_rbd_snapshots = parent_backup.backup_metadata.get("rbd_snapshots")
+                    logger.info(f"Parent RBD snapshots: {parent_rbd_snapshots}")
 
         try:
             if use_rbd_native:
