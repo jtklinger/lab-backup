@@ -3,6 +3,7 @@ Celery worker configuration and tasks.
 """
 import asyncio
 import logging
+import re
 import tempfile
 from pathlib import Path
 from datetime import datetime
